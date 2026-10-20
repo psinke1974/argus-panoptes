@@ -43,8 +43,10 @@ class Issue:
     parent: str | None
     labels: list[str]
     sprints: list[str]
-    comments: list[str]
+    comments: list[tuple[str, str, str]]  # (datum, auteur, tekst)
     links: list[tuple[str, str]]  # (jira-linktype, target key)
+    assignee_email: str = ""
+    attachments: list[tuple[str, str]] = field(default_factory=list)  # (bestandsnaam, download-url)
     extra: dict = field(default_factory=dict)
 
 
@@ -62,7 +64,7 @@ def read_csv(text: str) -> list[Issue]:
         parent = one("Parent") or one("Custom field (Epic Link)") or None
         issue = Issue(one("Issue key"), one("Issue id"), one("Summary"), one("Issue Type"), one("Status"), one("Priority"),
                       one("Assignee"), one("Reporter"), one("Created"), one("Description"), parent,
-                      cols.get("Labels", []), cols.get("Sprint", []), cols.get("Comment", []), links)
+                      cols.get("Labels", []), cols.get("Sprint", []), [parse_comment(c) for c in cols.get("Comment", [])], links)
         if one("Parent id"):
             issue.extra["parent_id"] = one("Parent id")
         by_id[issue.id] = issue.key
@@ -132,6 +134,11 @@ def footer(i: Issue, op_user: str | None) -> str:
 
 def run(op, csv_path: str, project_name: str | None, identifier: str | None, user_map: dict[str, str], dry_run: bool, key_prefix: bool = True, state_dir: str = ".import-state") -> str:
     issues = read_csv(Path(csv_path).read_text(encoding="utf-8-sig"))
+    return run_issues(op, issues, project_name, identifier, user_map, dry_run, key_prefix, state_dir)
+
+
+def run_issues(op, issues: list[Issue], project_name: str | None, identifier: str | None, user_map: dict[str, str], dry_run: bool, key_prefix: bool = True, state_dir: str = ".import-state", download=None, max_attachment_mb: int = 50) -> str:
+    """Gedeelde import voor CSV en API. `download(url) -> bytes` activeert bijlagen-import."""
     if not issues:
         raise SystemExit("geen issues in CSV gevonden")
     pkey = issues[0].key.rsplit("-", 1)[0]
@@ -175,8 +182,21 @@ def run(op, csv_path: str, project_name: str | None, identifier: str | None, use
         if found:
             users[jira_name] = found[0]["_links"]["self"]["href"]
 
+    email_cache: dict[str, str | None] = {}
+
+    def assignee_href(i: Issue) -> str | None:
+        if i.assignee in users:
+            return users[i.assignee]
+        if i.assignee_email:  # API geeft soms het e-mailadres mee: koppel automatisch op e-mail
+            if i.assignee_email not in email_cache:
+                found = op.elements(f"/users?filters={json.dumps([{'name': {'operator': '~', 'values': [i.assignee_email]}}])}")
+                match = [u for u in found if (u.get("email") or "").lower() == i.assignee_email.lower()]
+                email_cache[i.assignee_email] = match[0]["_links"]["self"]["href"] if match else None
+            return email_cache[i.assignee_email]
+        return None
+
     by_key = {i.key: (i, t, s, p) for i, t, s, p in plan}
-    created = 0
+    created = skipped_files = uploaded = 0
     for i in order_parents_first([x[0] for x in plan]):
         if i.key in state:
             continue
@@ -184,18 +204,29 @@ def run(op, csv_path: str, project_name: str | None, identifier: str | None, use
         links = {"type": {"href": t}, "status": {"href": s}}
         if p:
             links["priority"] = {"href": p}
-        if i.assignee in users:
-            links["assignee"] = {"href": users[i.assignee]}
+        a_href = assignee_href(i)
+        if a_href:
+            links["assignee"] = {"href": a_href}
         if i.parent in state:
             links["parent"] = {"href": f"/api/v3/work_packages/{state[i.parent]}"}
         subject = f"[{i.key}] {i.summary}" if key_prefix else i.summary
-        body = jira_to_md(i.description) + footer(i, users.get(i.assignee))
+        body = jira_to_md(i.description) + footer(i, a_href)
         wp = op.req("POST", f"/projects/{pid}/work_packages", json={"subject": subject, "description": {"raw": body}, "_links": links})
         state[i.key] = wp["id"]
         created += 1
-        for c in i.comments:
-            date, _, text = parse_comment(c)
-            op.req("POST", f"/work_packages/{wp['id']}/activities", json={"comment": {"raw": f"*Jira-comment ({date}):*\n\n{jira_to_md(text)}"}})
+        for date, author, text in i.comments:
+            who = f" van {author}" if author else ""
+            op.req("POST", f"/work_packages/{wp['id']}/activities", json={"comment": {"raw": f"*Jira-comment{who} ({date}):*\n\n{jira_to_md(text)}"}})
+        for fname, url in (i.attachments if download else []):
+            try:
+                data = download(url)
+                if len(data) > max_attachment_mb * 1024 * 1024:
+                    raise RuntimeError(f"groter dan {max_attachment_mb} MB")
+                op.upload_attachment(wp["id"], fname, data)
+                uploaded += 1
+            except Exception as e:  # een mislukte bijlage mag de import niet stoppen
+                skipped_files += 1
+                report.append(f"- Bijlage {fname} van {i.key} overgeslagen: {str(e)[:100]}")
         save()
 
     rels = 0
@@ -210,6 +241,6 @@ def run(op, csv_path: str, project_name: str | None, identifier: str | None, use
                 except RuntimeError as e:
                     report.append(f"- Relatie {i.key} {ltype} {target} overgeslagen: {str(e)[:100]}")
     save()
-    report.append(f"\nAangemaakt: {created}, relaties: {rels}. Mapping Jira-key -> OpenProject-id: {state_file}")
-    report.append("Niet geïmporteerd: bijlagen, worklogs, historie, workflow-schema's, custom fields (alleen labels/sprints als tekst).")
+    report.append(f"\nAangemaakt: {created}, relaties: {rels}, bijlagen: {uploaded} (overgeslagen: {skipped_files}). Mapping Jira-key -> OpenProject-id: {state_file}")
+    report.append("Niet geïmporteerd: worklogs, historie, workflow-schema's, custom fields (alleen labels/sprints als tekst).")
     return "\n".join(report)

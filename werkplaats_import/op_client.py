@@ -32,3 +32,10 @@ class OP:
 
     def elements(self, path: str) -> list[dict]:
         return self.req("GET", path)["_embedded"]["elements"]
+
+    def upload_attachment(self, wp_id: int, filename: str, data: bytes) -> None:
+        import json as _json
+        r = self.http.post(f"/work_packages/{wp_id}/attachments",
+                           files={"metadata": (None, _json.dumps({"fileName": filename}), "application/json"), "file": (filename, data)})
+        if r.status_code >= 400:
+            raise RuntimeError(f"upload -> {r.status_code}: {r.text[:200]}")
