@@ -5,7 +5,7 @@ import logging
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from . import config
+from . import config, legacy
 from .docs import changed_docs, doc_url, router as docs_router
 from .openproject import OpenProject
 from .refs import parse_refs
@@ -46,7 +46,7 @@ async def gitea_hook(
         default = p["repository"].get("default_branch", "main")
         on_default = p.get("ref") == f"refs/heads/{default}"
         for c in p.get("commits", []):
-            for ref in parse_refs(c["message"]):
+            for ref in parse_refs(c["message"], legacy.load()):
                 first = c["message"].splitlines()[0]
                 docs = "".join(f"\n- Documentatie: [{d}]({doc_url(repo, d)})" for d in changed_docs(c))
                 await op.comment(ref.wp_id, f"Commit in **{repo}**: [{first}]({c['url']}) door {c['author']['name']}{docs}")
@@ -57,7 +57,7 @@ async def gitea_hook(
     elif x_gitea_event == "pull_request":
         pr = p["pull_request"]
         action = p.get("action")
-        for ref in parse_refs(f"{pr['title']}\n{pr.get('body') or ''}"):
+        for ref in parse_refs(f"{pr['title']}\n{pr.get('body') or ''}", legacy.load()):
             if action == "opened":
                 await op.comment(ref.wp_id, f"Pull request geopend in **{repo}**: [{pr['title']}]({pr['html_url']})")
                 await op.set_status(ref.wp_id, config.STATUS_IN_PROGRESS)

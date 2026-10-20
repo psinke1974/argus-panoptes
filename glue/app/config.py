@@ -10,3 +10,4 @@ STATUS_IN_PROGRESS = os.getenv("STATUS_IN_PROGRESS", "In progress")
 OP_HOST_HEADER = os.getenv("OP_HOST_HEADER", "localhost:8080")  # moet gelijk zijn aan OPENPROJECT_HOST__NAME
 PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8090")  # basis-URL van deze service, voor links in OpenProject
 OP_PUBLIC_URL = os.getenv("OP_PUBLIC_URL", "http://localhost:8080")
+LEGACY_KEYS_DIR = os.getenv("LEGACY_KEYS_DIR", "/data/import-state")  # map met jira-*.json van de importer

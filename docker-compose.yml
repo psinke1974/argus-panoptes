@@ -31,6 +31,8 @@ services:
     restart: unless-stopped
     ports: ["8090:8090"]
     env_file: .env
+    volumes:
+      - ./.import-state:/data/import-state:ro   # oude Jira-sleutels (PROJ-12) -> werkpakket
     depends_on: [openproject, gitea]
 
 volumes:

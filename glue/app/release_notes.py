@@ -1,10 +1,11 @@
 from collections import defaultdict
 
+from . import legacy
 from .refs import parse_refs
 
 
 async def build_release_notes(op, messages: list[str], title: str) -> str:
-    ids = sorted({r.wp_id for m in messages for r in parse_refs(m)})
+    ids = sorted({r.wp_id for m in messages for r in parse_refs(m, legacy.load())})
     groups: dict[str, list[str]] = defaultdict(list)
     for wp_id in ids:
         try:

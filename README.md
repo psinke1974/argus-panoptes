@@ -18,6 +18,7 @@ docker compose up -d --build
 3. `docker compose up -d glue` en voeg in je Gitea-repo een webhook toe: `http://glue:8090/hooks/gitea`, secret = `WEBHOOK_SECRET`, events: push + pull request.
 
 ## Wat het nu doet
+- Na een Jira-import werken ook de oude sleutels: `fixes PROJ-12` in een commit of PR wordt via `.import-state/` vertaald naar het nieuwe werkpakket (alleen sleutels die de importer kent).
 - `OP#123` in commit of PR-tekst: commentaar op werkpakket 123 met link.
 - PR geopend: status naar *In progress*. `fixes OP#123` + merge of push naar default branch: status naar *Closed*.
 - `GET /release-notes?repo=owner/naam&base=v1&head=v2`: release notes in Markdown, gegroepeerd per werkpakkettype.

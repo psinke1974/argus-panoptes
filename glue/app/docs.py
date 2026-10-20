@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, Response
 
-from . import config
+from . import config, legacy
 from .refs import parse_refs
 
 router = APIRouter(prefix="/docs")
@@ -120,7 +120,7 @@ async def view(owner: str, name: str, path: str):
         commits = (await g.get(f"/api/v1/repos/{repo}/commits", params={"path": path, "limit": 20, "stat": "false"})).json()
     tickets: dict[int, str] = {}
     for c in commits:
-        for ref in parse_refs(c["commit"]["message"]):
+        for ref in parse_refs(c["commit"]["message"], legacy.load()):
             tickets.setdefault(ref.wp_id, c["commit"]["message"].splitlines()[0])
     back = "".join(f'<li><a href="{config.OP_PUBLIC_URL}/work_packages/{i}">OP#{i}</a> – {html.escape(m)}</li>' for i, m in tickets.items())
     aside = f"<aside><b>Gerelateerde werkpakketten</b><ul>{back}</ul></aside>" if back else ""

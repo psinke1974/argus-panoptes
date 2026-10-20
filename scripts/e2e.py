@@ -99,4 +99,16 @@ base = GT.get(f"/repos/werkplaats/{repo}/commits", params={"limit": 50}).json()[
 rn = httpx.get("http://localhost:8090/release-notes", params={"repo": f"werkplaats/{repo}", "base": base, "head": "main"}, timeout=30)
 check(rn.status_code == 200 and "E2E taak" in rn.json()["markdown"], "release notes bevatten het werkpakket")
 print(rn.json()["markdown"])
+# 5. Oude Jira-sleutel (uit importer-mapping)
+import json
+sf = Path(".import-state/jira-demo-import.json")
+if sf.exists():
+    legacy_id = json.loads(sf.read_text())["DEMO-2"]
+    check(put_file("b.txt", "b", "main", "fixes DEMO-2: oude sleutel werkt").status_code == 201, "commit met oude Jira-sleutel")
+    def legacy_wp():
+        return OP.get(f"/work_packages/{legacy_id}").json()
+    check(wait(lambda: legacy_wp()["_links"]["status"]["title"] == E.get("STATUS_CLOSED", "Closed"), "legacy closed"), "DEMO-2 -> werkpakket gesloten via oude sleutel")
+else:
+    print("SKIP legacy-test (geen .import-state; draai eerst een Jira-import)")
+
 print("\nALLES GESLAAGD")

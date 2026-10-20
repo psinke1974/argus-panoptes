@@ -75,3 +75,15 @@ def test_rewrite_links():
     assert "(/docs/o/r/docs/home/architectuur/database.md#x)" in out
     assert "(/docs/o/r/_raw/docs/_bijlagen/p.png)" in out
     assert "(https://e.nl)" in out and "(#top)" in out
+
+
+def test_legacy_keys(tmp_path, monkeypatch):
+    from app import legacy
+
+    (tmp_path / "jira-demo.json").write_text('{"DEMO-2": 43, "DEMO-1": 41, "__relations__": []}')
+    monkeypatch.setattr(config, "LEGACY_KEYS_DIR", str(tmp_path))
+    assert legacy.load() == {"DEMO-2": 43, "DEMO-1": 41}
+    keys = legacy.load()
+    assert parse_refs("fixes DEMO-2, zie ook demo-1 en UTF-8 en OTHER-9", keys) == [Ref(43, True), Ref(41, False)]
+    assert parse_refs("DEMO-2 en OP#43", keys) == [Ref(43, False)]
+    assert parse_refs("DEMO-2", None) == []
