@@ -1,0 +1,3 @@
+# Global options go here if needed (for example: { email you@example.com }).
+# Per-customer routes live in tenants/*.caddy, written by deploy/tenantctl.py.
+import /etc/caddy/tenants/*.caddy

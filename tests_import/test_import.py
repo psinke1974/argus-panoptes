@@ -1,20 +1,20 @@
 from pathlib import Path
 
-from werkplaats_import import confluence, jira
-from werkplaats_import.jira_markup import jira_to_md
+from panoptes_import import confluence, jira
+from panoptes_import.jira_markup import jira_to_md
 
 FX = Path(__file__).parent / "fixtures"
 
 
 def test_jira_markup():
-    md = jira_to_md("h2. Titel\nDit is *vet* en _schuin_ met {{code}}\n* een\n** twee\n# nr\n[x|http://a.b]\n{code:java}\nint x;\n{code}")
-    assert "## Titel" in md and "**vet**" in md and "*schuin*" in md and "`code`" in md
-    assert "- een" in md and "  - twee" in md and "1. nr" in md and "[x](http://a.b)" in md
+    md = jira_to_md("h2. Title\nThis is *bold* and _italic_ with {{code}}\n* one\n** two\n# num\n[x|http://a.b]\n{code:java}\nint x;\n{code}")
+    assert "## Title" in md and "**bold**" in md and "*italic*" in md and "`code`" in md
+    assert "- one" in md and "  - two" in md and "1. num" in md and "[x](http://a.b)" in md
     assert "```java\nint x;\n```" in md
 
 
 def test_jira_table():
-    assert "| Naam | Waarde |\n|---|---|\n| a | b |" in jira_to_md("||Naam||Waarde||\n|a|b|")
+    assert "| Name | Value |\n|---|---|\n| a | b |" in jira_to_md("||Name||Value||\n|a|b|")
 
 
 def test_read_csv():
@@ -27,27 +27,27 @@ def test_read_csv():
 
 
 def test_pick_fallback():
-    actual = {"Taak": "/t", "Fout": "/f"}
+    actual = {"Task": "/t", "Bug": "/f"}
     assert jira.pick("Bug", jira.TYPE_MAP, actual) == ("/f", True)
-    assert jira.pick("Spike", jira.TYPE_MAP, actual, "Taak") == ("/t", False)
+    assert jira.pick("Spike", jira.TYPE_MAP, actual, ["Task"]) == ("/t", False)
 
 
 def test_confluence(tmp_path):
     written = confluence.convert_space(FX / "confluence", tmp_path, "TEAM")
-    assert written == ["docs/home.md", "docs/home/architectuur.md", "docs/home/architectuur/database.md", "docs/home/beheer.md"]
+    assert written == ["docs/home.md", "docs/home/architecture.md", "docs/home/architecture/database.md", "docs/home/operations.md"]
     home = (tmp_path / "docs/home.md").read_text()
-    assert "[architectuur](home/architectuur.md)" in home and "Waarschuwing" in home and "https://example.com" in home
-    arch = (tmp_path / "docs/home/architectuur.md").read_text()
-    assert "```sql\nSELECT 1;\n```" in arch and "(architectuur/database.md)" in arch
-    assert "](../_bijlagen/attachments/123/456.png)" in arch and (tmp_path / "docs/_bijlagen/attachments/123/456.png").exists()
-    assert "| Naam | Type |" in (tmp_path / "docs/home/architectuur/database.md").read_text()
+    assert "[architecture](home/architecture.md)" in home and "Warning" in home and "https://example.com" in home
+    arch = (tmp_path / "docs/home/architecture.md").read_text()
+    assert "```sql\nSELECT 1;\n```" in arch and "(architecture/database.md)" in arch
+    assert "](../_attachments/attachments/123/456.png)" in arch and (tmp_path / "docs/_attachments/attachments/123/456.png").exists()
+    assert "| Name | Type |" in (tmp_path / "docs/home/architecture/database.md").read_text()
 
 
-# ---- API-importers tegen nep-Atlassian ----
+# ---- API importers against the fake Atlassian ----
 import httpx
 
-from werkplaats_import import atlassian_api
-from werkplaats_import.confluence_storage import storage_to_html
+from panoptes_import import atlassian_api
+from panoptes_import.confluence_storage import storage_to_html
 from tests_import import mock_atlassian as mock
 
 
@@ -64,7 +64,7 @@ def test_jira_api_cloud_pagination():
     assert [i.key for i in issues] == ["API-1", "API-2", "API-3", "API-4"]
     i2 = issues[1]
     assert i2.parent == "API-1" and i2.sprints == ["Sprint 4"] and i2.assignee_email == "jan@example.com"
-    assert i2.comments == [("2026-10-21 10:00", "Jan Jansen", "Ik kijk ernaar, zie {{login.py}}")]
+    assert i2.comments == [("2026-10-21 10:00", "Jan Jansen", "I will look into it, see {{login.py}}")]
     assert i2.attachments == [("spec.txt", "http://mock/secure/attachment/10002/spec.txt")]
     assert issues[0].links == [("blocks", "API-4")]
 
@@ -76,20 +76,20 @@ def test_jira_api_server_paging():
 
 def test_storage_to_html():
     warnings, needed = [], set()
-    out = storage_to_html(mock.PAGES[1]["storage"], "2", {"Architectuur": "a_2.html"}, warnings, needed)
+    out = storage_to_html(mock.PAGES[1]["storage"], "2", {"Architecture": "a_2.html"}, warnings, needed)
     assert 'brush: sql' in out and "SELECT * FROM t WHERE a &lt; 2;" in out
     assert needed == {"diagram.png"} and 'src="attachments/2/diagram.png"' in out
     assert any("jira" in w for w in warnings)
-    home = storage_to_html(mock.PAGES[0]["storage"], "1", {"Architectuur": "a_2.html"}, warnings, set())
-    assert '<a href="a_2.html">Architectuur</a>' in home and "toc" not in home and "confluence-information-macro-warning" in home
+    home = storage_to_html(mock.PAGES[0]["storage"], "1", {"Architecture": "a_2.html"}, warnings, set())
+    assert '<a href="a_2.html">Architecture</a>' in home and "toc" not in home and "confluence-information-macro-warning" in home
 
 
 def test_confluence_api_roundtrip(tmp_path):
     warnings = atlassian_api.export_confluence_space(mock_client(), "TEAM", tmp_path / "src")
     pages = confluence.convert_space(tmp_path / "src", tmp_path / "out", "TEAM")
-    assert pages == ["docs/home.md", "docs/home/architectuur.md", "docs/home/architectuur/database-opslag.md"]
-    arch = (tmp_path / "out/docs/home/architectuur.md").read_text()
-    assert "```sql" in arch and "_bijlagen/attachments/2/diagram.png" in arch
-    assert (tmp_path / "out/docs/_bijlagen/attachments/2/diagram.png").read_bytes() == b"PNGDATA"
-    assert "[Architectuur](home/architectuur.md)" in (tmp_path / "out/docs/home.md").read_text()
+    assert pages == ["docs/home.md", "docs/home/architecture.md", "docs/home/architecture/database-storage.md"]
+    arch = (tmp_path / "out/docs/home/architecture.md").read_text()
+    assert "```sql" in arch and "_attachments/attachments/2/diagram.png" in arch
+    assert (tmp_path / "out/docs/_attachments/attachments/2/diagram.png").read_bytes() == b"PNGDATA"
+    assert "[Architecture](home/architecture.md)" in (tmp_path / "out/docs/home.md").read_text()
     assert warnings

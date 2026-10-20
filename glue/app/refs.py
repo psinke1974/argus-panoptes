@@ -13,8 +13,8 @@ class Ref:
 
 
 def parse_refs(text: str, legacy: dict[str, int] | None = None) -> list[Ref]:
-    """Vind OP#123-verwijzingen en (met `legacy`) oude Jira-sleutels als PROJ-12.
-    'fixes OP#123' / 'fixes PROJ-12' sluit het werkpakket af."""
+    """Find OP#123 references and (given `legacy`) old Jira keys such as PROJ-12.
+    'fixes OP#123' / 'fixes PROJ-12' closes the work package."""
     found: dict[int, bool] = {}
 
     def add(wp: int, kw) -> None:

@@ -1,4 +1,4 @@
-"""Jira wiki-markup -> Markdown (de gangbare subset: koppen, opmaak, lijsten, code, links, tabellen, quotes)."""
+"""Jira wiki markup -> Markdown (the common subset: headings, formatting, lists, code, links, tables, quotes)."""
 import re
 
 _CODE = re.compile(r"\{(code|noformat)(?::([\w+-]+))?[^}]*\}(.*?)\{\1\}", re.S)
@@ -47,7 +47,7 @@ def jira_to_md(text: str) -> str:
     text = re.sub(r"(?<![\w*])\*(\S(?:[^*\n]*?\S)?)\*(?![\w*])", r"**\1**", text)
     text = re.sub(r"(?<![\w_])_(\S(?:[^_\n]*?\S)?)_(?![\w_])", r"*\1*", text)
     text = re.sub(r"(?<![\w-])-(\S(?:[^-\n]*?\S)?)-(?![\w-])", r"~~\1~~", text)
-    text = re.sub(r"!([^!\s|]+)(?:\|[^!]*)?!", r"*(afbeelding: \1)*", text)
+    text = re.sub(r"!([^!\s|]+)(?:\|[^!]*)?!", r"*(image: \1)*", text)
     text = re.sub(r"\[~([^\]]+)\]", r"@\1", text)
     text = text.replace("\x01", "#").replace("\x02", "-")
     for i, b in enumerate(blocks):

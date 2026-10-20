@@ -16,13 +16,13 @@ def load_env(path: str = ".env") -> dict:
 
 
 class OP:
-    def __init__(self, base: str, api_key: str, host: str | None = None):
+    def __init__(self, base: str, api_key: str, host: str | None = None, verify: bool = True):
         headers = {"Host": host} if host else {}
-        self.http = httpx.Client(base_url=base.rstrip("/") + "/api/v3", auth=("apikey", api_key), headers=headers, timeout=60)
+        self.http = httpx.Client(base_url=base.rstrip("/") + "/api/v3", auth=("apikey", api_key), headers=headers, timeout=60, verify=verify)
 
     @classmethod
     def from_env(cls, env: dict):
-        return cls(env.get("OP_PUBLIC_URL_LOCAL", "http://localhost:8080"), env["OP_API_KEY"], env.get("OP_HOST_HEADER"))
+        return cls(env.get("OP_PUBLIC_URL_LOCAL", "http://localhost:8080"), env["OP_API_KEY"], env.get("OP_HOST_HEADER"), env.get("TLS_VERIFY", "true") != "false")
 
     def req(self, method: str, path: str, **kw) -> dict:
         r = self.http.request(method, path, **kw)

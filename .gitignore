@@ -2,3 +2,6 @@
 __pycache__/
 .venv/
 .import-state/
+tenants/
+deploy/proxy/tenants/*.caddy
+!deploy/proxy/tenants/00-placeholder.caddy

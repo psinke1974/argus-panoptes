@@ -1,4 +1,4 @@
-"""Confluence storage-format (XHTML + ac:/ri:-macro's) -> HTML in de vorm van een HTML-export, zodat convert_space het kan verwerken."""
+"""Confluence storage format (XHTML + ac:/ri: macros) -> HTML shaped like an HTML export, so convert_space can process it."""
 import html as htmllib
 import re
 
@@ -36,12 +36,12 @@ def storage_to_html(storage: str, page_id: str, title_to_file: dict[str, str], w
         else:
             body = m.find("ac:rich-text-body")
             if body:
-                warnings.append(f"macro '{name}' op pagina {page_id}: alleen de inhoud overgenomen")
+                warnings.append(f"macro '{name}' on page {page_id}: only the content was kept")
                 m.replace_with(*list(body.children))
             else:
-                warnings.append(f"macro '{name}' op pagina {page_id} niet geconverteerd")
+                warnings.append(f"macro '{name}' on page {page_id} not converted")
                 note = new("p")
-                note.string = f"[Confluence-macro '{name}' niet geconverteerd]"
+                note.string = f"[Confluence macro '{name}' not converted]"
                 m.replace_with(note)
 
     for img in soup.find_all("ac:image"):
@@ -70,11 +70,11 @@ def storage_to_html(storage: str, page_id: str, title_to_file: dict[str, str], w
             text = text or att["ri:filename"]
         a.string = text or "link"
         if not a.get("href"):
-            link.replace_with(a.string)  # doelpagina onbekend: alleen tekst
+            link.replace_with(a.string)  # target page unknown: text only
         else:
             link.replace_with(a)
 
-    for t in soup.find_all(re.compile(r"^(ac|ri):")):  # overige ac:-tags (task-list, placeholder, ...)
+    for t in soup.find_all(re.compile(r"^(ac|ri):")):  # remaining ac: tags (task-list, placeholder, ...)
         t.unwrap()
     for t in soup.find_all("time"):
         t.replace_with(t.get("datetime", t.get_text()))

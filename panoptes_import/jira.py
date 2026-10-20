@@ -1,4 +1,4 @@
-"""Jira CSV-export -> OpenProject werkpakketten (incl. hiërarchie, relaties, comments)."""
+"""Jira CSV export -> OpenProject work packages (incl. hierarchy, relations, comments)."""
 import csv
 import io
 import json
@@ -10,20 +10,20 @@ from pathlib import Path
 
 from .jira_markup import jira_to_md
 
-# Jira-waarde (lowercase) -> kandidaatnamen in OpenProject (NL eerst, dan EN)
-TYPE_MAP = {"bug": ["Fout", "Bug"], "story": ["Gebruikersverhaal", "User story"], "epic": ["Episch", "Epic"],
-            "task": ["Taak", "Task"], "sub-task": ["Taak", "Task"], "subtask": ["Taak", "Task"],
-            "feature": ["Functie", "Feature"], "new feature": ["Functie", "Feature"], "improvement": ["Functie", "Feature"]}
-STATUS_MAP = {"to do": ["Nieuw", "New"], "open": ["Nieuw", "New"], "backlog": ["Nieuw", "New"], "new": ["Nieuw", "New"],
-              "selected for development": ["Gepland", "Scheduled"], "in progress": ["In behandeling", "In progress"],
-              "in development": ["In behandeling", "In progress"], "in review": ["In test", "In testing"],
-              "in test": ["In test", "In testing"], "testing": ["In test", "In testing"], "qa": ["In test", "In testing"],
-              "done": ["Gesloten", "Closed"], "closed": ["Gesloten", "Closed"], "resolved": ["Gesloten", "Closed"],
-              "complete": ["Gesloten", "Closed"], "rejected": ["Afgewezen", "Rejected"], "won't do": ["Afgewezen", "Rejected"],
-              "on hold": ["In de wacht", "On hold"], "blocked": ["In de wacht", "On hold"]}
-PRIO_MAP = {"highest": ["Onmiddellijk", "Immediate"], "blocker": ["Onmiddellijk", "Immediate"], "critical": ["Onmiddellijk", "Immediate"],
-            "high": ["Hoog", "High"], "medium": ["Normaal", "Normal"], "low": ["Laag", "Low"], "lowest": ["Laag", "Low"],
-            "major": ["Hoog", "High"], "minor": ["Laag", "Low"], "trivial": ["Laag", "Low"]}
+# Jira value (lowercase) -> candidate names in OpenProject (English first, then Dutch for NL installs)
+TYPE_MAP = {"bug": ["Bug", "Fout"], "story": ["User story", "Gebruikersverhaal"], "epic": ["Epic", "Episch"],
+            "task": ["Task", "Taak"], "sub-task": ["Task", "Taak"], "subtask": ["Task", "Taak"],
+            "feature": ["Feature", "Functie"], "new feature": ["Feature", "Functie"], "improvement": ["Feature", "Functie"]}
+STATUS_MAP = {"to do": ["New", "Nieuw"], "open": ["New", "Nieuw"], "backlog": ["New", "Nieuw"], "new": ["New", "Nieuw"],
+              "selected for development": ["Scheduled", "Gepland"], "in progress": ["In progress", "In behandeling"],
+              "in development": ["In progress", "In behandeling"], "in review": ["In testing", "In test"],
+              "in test": ["In testing", "In test"], "testing": ["In testing", "In test"], "qa": ["In testing", "In test"],
+              "done": ["Closed", "Gesloten"], "closed": ["Closed", "Gesloten"], "resolved": ["Closed", "Gesloten"],
+              "complete": ["Closed", "Gesloten"], "rejected": ["Rejected", "Afgewezen"], "won't do": ["Rejected", "Afgewezen"],
+              "on hold": ["On hold", "In de wacht"], "blocked": ["On hold", "In de wacht"]}
+PRIO_MAP = {"highest": ["Immediate", "Onmiddellijk"], "blocker": ["Immediate", "Onmiddellijk"], "critical": ["Immediate", "Onmiddellijk"],
+            "high": ["High", "Hoog"], "medium": ["Normal", "Normaal"], "low": ["Low", "Laag"], "lowest": ["Low", "Laag"],
+            "major": ["High", "Hoog"], "minor": ["Low", "Laag"], "trivial": ["Low", "Laag"]}
 REL_MAP = {"blocks": "blocks", "duplicate": "duplicates", "duplicates": "duplicates", "cloners": "relates", "relates": "relates"}
 KEY = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 
@@ -43,10 +43,10 @@ class Issue:
     parent: str | None
     labels: list[str]
     sprints: list[str]
-    comments: list[tuple[str, str, str]]  # (datum, auteur, tekst)
-    links: list[tuple[str, str]]  # (jira-linktype, target key)
+    comments: list[tuple[str, str, str]]  # (date, author, text)
+    links: list[tuple[str, str]]  # (Jira link type, target key)
     assignee_email: str = ""
-    attachments: list[tuple[str, str]] = field(default_factory=list)  # (bestandsnaam, download-url)
+    attachments: list[tuple[str, str]] = field(default_factory=list)  # (file name, download URL)
     extra: dict = field(default_factory=dict)
 
 
@@ -76,7 +76,7 @@ def read_csv(text: str) -> list[Issue]:
 
 
 def parse_comment(raw: str) -> tuple[str, str, str]:
-    """'20/Oct/26 3:04 PM;accountid;tekst' -> (datum, auteur-id, tekst)"""
+    """'20/Oct/26 3:04 PM;accountid;text' -> (date, author id, text)"""
     parts = raw.split(";", 2)
     return (parts[0], parts[1], parts[2]) if len(parts) == 3 else ("", "", raw)
 
@@ -95,36 +95,36 @@ def order_parents_first(issues: list[Issue]) -> list[Issue]:
     return sorted(issues, key=lambda i: d(i.key))
 
 
-def pick(name: str, table: dict, actual: dict[str, str], fallback: str | None = None) -> tuple[str | None, bool]:
-    """Geef (href, exact) voor Jira-waarde `name`; exact=False als op fallback teruggevallen is."""
+def pick(name: str, table: dict, actual: dict[str, str], fallback: list[str] | None = None) -> tuple[str | None, bool]:
+    """Return (href, exact) for Jira value `name`; exact=False if a fallback was used."""
     low = {k.lower(): v for k, v in actual.items()}
     for cand in table.get(name.lower(), []):
         if cand.lower() in low:
             return low[cand.lower()], True
     if name.lower() in low:
         return low[name.lower()], True
-    return (low.get(fallback.lower()) if fallback else None), False
+    return next((low[f.lower()] for f in fallback or [] if f.lower() in low), None), False
 
 
 def ensure_types(op, identifier: str, pid: int, types: dict) -> None:
-    """Nieuwe projecten hebben maar een paar typen aan; de API kan dat niet wijzigen, dus via het beheerscript."""
+    """New projects only have a few types enabled; the API cannot change that, so use the admin script."""
     enabled = lambda: {t["name"] for t in op.elements(f"/projects/{pid}/types")}
     if set(types) <= enabled():
         return
     script = Path(__file__).resolve().parent.parent / "scripts" / "op-enable-types.sh"
     subprocess.run([str(script), identifier], check=False, capture_output=True)
     if not set(types) <= enabled():
-        raise SystemExit(f"Typen zijn niet actief in project {identifier}. Draai: scripts/op-enable-types.sh {identifier}")
+        raise SystemExit(f"Work package types are not enabled in project {identifier}. Run: scripts/op-enable-types.sh {identifier}")
 
 
 def footer(i: Issue, op_user: str | None) -> str:
-    bits = [f"Geïmporteerd uit Jira: **{i.key}**"]
+    bits = [f"Imported from Jira: **{i.key}**"]
     if i.reporter:
-        bits.append(f"melder: {i.reporter}")
+        bits.append(f"reporter: {i.reporter}")
     if i.created:
-        bits.append(f"aangemaakt: {i.created}")
+        bits.append(f"created: {i.created}")
     if i.assignee and not op_user:
-        bits.append(f"toegewezen aan (Jira): {i.assignee}")
+        bits.append(f"assignee (Jira): {i.assignee}")
     if i.labels:
         bits.append("labels: " + ", ".join(i.labels))
     if i.sprints:
@@ -138,15 +138,15 @@ def run(op, csv_path: str, project_name: str | None, identifier: str | None, use
 
 
 def run_issues(op, issues: list[Issue], project_name: str | None, identifier: str | None, user_map: dict[str, str], dry_run: bool, key_prefix: bool = True, state_dir: str = ".import-state", download=None, max_attachment_mb: int = 50) -> str:
-    """Gedeelde import voor CSV en API. `download(url) -> bytes` activeert bijlagen-import."""
+    """Shared import for CSV and API. `download(url) -> bytes` enables attachment import."""
     if not issues:
-        raise SystemExit("geen issues in CSV gevonden")
+        raise SystemExit("no issues found")
     pkey = issues[0].key.rsplit("-", 1)[0]
     identifier = identifier or pkey.lower().replace("_", "-")
     state_file = Path(state_dir) / f"jira-{identifier}.json"
     state: dict = json.loads(state_file.read_text()) if state_file.exists() else {}
     done_rels: list[str] = state.pop("__relations__", [])
-    report = [f"# Jira-import {pkey} -> {identifier}", f"{len(issues)} issues, {len(state)} al eerder geïmporteerd", ""]
+    report = [f"# Jira import {pkey} -> {identifier}", f"{len(issues)} issues, {len(state)} imported before", ""]
     save = lambda: (state_file.parent.mkdir(exist_ok=True), state_file.write_text(json.dumps({**state, "__relations__": done_rels}, indent=1)))
     warn: dict[str, set] = defaultdict(set)
 
@@ -156,17 +156,17 @@ def run_issues(op, issues: list[Issue], project_name: str | None, identifier: st
 
     plan = []
     for i in issues:
-        t, te = pick(i.type, TYPE_MAP, types, "Taak")
-        s, se = pick(i.status, STATUS_MAP, statuses, "Nieuw")
-        p, pe = pick(i.priority, PRIO_MAP, prios, "Normaal") if i.priority else (None, True)
-        for ok, kind, val in ((te, "type", i.type), (se, "status", i.status), (pe, "prioriteit", i.priority)):
+        t, te = pick(i.type, TYPE_MAP, types, ["Task", "Taak"])
+        s, se = pick(i.status, STATUS_MAP, statuses, ["New", "Nieuw"])
+        p, pe = pick(i.priority, PRIO_MAP, prios, ["Normal", "Normaal"]) if i.priority else (None, True)
+        for ok, kind, val in ((te, "type", i.type), (se, "status", i.status), (pe, "priority", i.priority)):
             if not ok:
                 warn[kind].add(val)
         plan.append((i, t, s, p))
     for kind, vals in warn.items():
-        report.append(f"- Geen exacte mapping voor {kind}: {', '.join(sorted(vals))} (fallback gebruikt)")
+        report.append(f"- No exact mapping for {kind}: {', '.join(sorted(vals))} (fallback used)")
     if dry_run:
-        report.append(f"\nDry-run: {len(issues) - len(state)} werkpakketten zouden worden aangemaakt.")
+        report.append(f"\nDry run: {len(issues) - len(state)} work packages would be created.")
         return "\n".join(report)
 
     try:
@@ -187,7 +187,7 @@ def run_issues(op, issues: list[Issue], project_name: str | None, identifier: st
     def assignee_href(i: Issue) -> str | None:
         if i.assignee in users:
             return users[i.assignee]
-        if i.assignee_email:  # API geeft soms het e-mailadres mee: koppel automatisch op e-mail
+        if i.assignee_email:  # the API sometimes returns the e-mail address: match users on e-mail automatically
             if i.assignee_email not in email_cache:
                 found = op.elements(f"/users?filters={json.dumps([{'name': {'operator': '~', 'values': [i.assignee_email]}}])}")
                 match = [u for u in found if (u.get("email") or "").lower() == i.assignee_email.lower()]
@@ -215,18 +215,18 @@ def run_issues(op, issues: list[Issue], project_name: str | None, identifier: st
         state[i.key] = wp["id"]
         created += 1
         for date, author, text in i.comments:
-            who = f" van {author}" if author else ""
-            op.req("POST", f"/work_packages/{wp['id']}/activities", json={"comment": {"raw": f"*Jira-comment{who} ({date}):*\n\n{jira_to_md(text)}"}})
+            who = f" by {author}" if author else ""
+            op.req("POST", f"/work_packages/{wp['id']}/activities", json={"comment": {"raw": f"*Jira comment{who} ({date}):*\n\n{jira_to_md(text)}"}})
         for fname, url in (i.attachments if download else []):
             try:
                 data = download(url)
                 if len(data) > max_attachment_mb * 1024 * 1024:
-                    raise RuntimeError(f"groter dan {max_attachment_mb} MB")
+                    raise RuntimeError(f"larger than {max_attachment_mb} MB")
                 op.upload_attachment(wp["id"], fname, data)
                 uploaded += 1
-            except Exception as e:  # een mislukte bijlage mag de import niet stoppen
+            except Exception as e:  # a failed attachment must not stop the import
                 skipped_files += 1
-                report.append(f"- Bijlage {fname} van {i.key} overgeslagen: {str(e)[:100]}")
+                report.append(f"- Attachment {fname} of {i.key} skipped: {str(e)[:100]}")
         save()
 
     rels = 0
@@ -239,8 +239,8 @@ def run_issues(op, issues: list[Issue], project_name: str | None, identifier: st
                     rels += 1
                     done_rels.append(tag)
                 except RuntimeError as e:
-                    report.append(f"- Relatie {i.key} {ltype} {target} overgeslagen: {str(e)[:100]}")
+                    report.append(f"- Relation {i.key} {ltype} {target} skipped: {str(e)[:100]}")
     save()
-    report.append(f"\nAangemaakt: {created}, relaties: {rels}, bijlagen: {uploaded} (overgeslagen: {skipped_files}). Mapping Jira-key -> OpenProject-id: {state_file}")
-    report.append("Niet geïmporteerd: worklogs, historie, workflow-schema's, custom fields (alleen labels/sprints als tekst).")
+    report.append(f"\nCreated: {created}, relations: {rels}, attachments: {uploaded} (skipped: {skipped_files}). Jira key -> OpenProject id mapping: {state_file}")
+    report.append("Not imported: worklogs, history, workflows, custom fields (only labels/sprints as text).")
     return "\n".join(report)

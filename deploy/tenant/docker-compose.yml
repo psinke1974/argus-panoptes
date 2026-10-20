@@ -1,0 +1,63 @@
+# One Panoptes stack per customer (tenant). Do not use directly: deploy/tenantctl.py creates the .env and routing.
+name: panoptes-${TENANT:?}
+services:
+  openproject:
+    image: openproject/openproject:17
+    restart: unless-stopped
+    environment:
+      OPENPROJECT_HOST__NAME: ${OP_HOST:?}
+      OPENPROJECT_HTTPS: "true"
+      SECRET_KEY_BASE: ${OP_SECRET_KEY_BASE:?}
+      OPENPROJECT_DEFAULT__LANGUAGE: ${LANGUAGE:-nl}
+    volumes: [op_pgdata:/var/openproject/pgdata, op_assets:/var/openproject/assets]
+    networks:
+      internal:
+      proxy: {aliases: ["${TENANT}-op"]}
+
+  gitea:
+    image: gitea/gitea:1.24
+    restart: unless-stopped
+    environment:
+      GITEA__server__DOMAIN: git.${OP_HOST}
+      GITEA__server__ROOT_URL: https://git.${OP_HOST}/
+      GITEA__server__DISABLE_SSH: "true"          # HTTPS clone only: no per-tenant SSH port needed
+      GITEA__webhook__ALLOWED_HOST_LIST: glue
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__security__INSTALL_LOCK: "true"
+    volumes: [gitea_data:/data]
+    networks:
+      internal:
+      proxy: {aliases: ["${TENANT}-git"]}
+
+  glue:
+    image: panoptes-glue:local
+    build: ../../glue
+    restart: unless-stopped
+    environment:
+      OP_API_KEY: ${OP_API_KEY:-}
+      GITEA_TOKEN: ${GITEA_TOKEN:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:?}
+      STATUS_CLOSED: ${STATUS_CLOSED:-Closed}
+      STATUS_IN_PROGRESS: ${STATUS_IN_PROGRESS:-In progress}
+      OP_URL: http://openproject:80
+      OP_HOST_HEADER: ${OP_HOST}
+      OP_FORWARDED_PROTO: https
+      GITEA_URL: http://gitea:3000
+      PUBLIC_URL: https://docs.${OP_HOST}
+      OP_PUBLIC_URL: https://${OP_HOST}
+      LEGACY_KEYS_DIR: /data/import-state
+    volumes: ["${TENANT_DIR:?}/import-state:/data/import-state:ro"]
+    depends_on: [openproject, gitea]
+    networks:
+      internal:
+      proxy: {aliases: ["${TENANT}-glue"]}
+
+networks:
+  internal:
+  proxy:
+    name: panoptes-proxy
+    external: true
+volumes:
+  op_pgdata:
+  op_assets:
+  gitea_data:

@@ -1,4 +1,4 @@
-"""Confluence HTML-space-export (zip of map) -> Markdown-bestanden in docs/ (met boomstructuur en bijlagen)."""
+"""Confluence HTML space export (zip or directory) -> Markdown files in docs/ (with page tree and attachments)."""
 import posixpath
 import re
 import shutil
@@ -13,7 +13,7 @@ from markdownify import MarkdownConverter
 
 def slug(s: str) -> str:
     s = re.sub(r"[^\w\s-]", "", s.lower(), flags=re.U)
-    return re.sub(r"[\s_-]+", "-", s).strip("-") or "pagina"
+    return re.sub(r"[\s_-]+", "-", s).strip("-") or "page"
 
 
 class Conv(MarkdownConverter):
@@ -23,13 +23,13 @@ class Conv(MarkdownConverter):
         return f"\n```{m.group(1) if m else ''}\n{el.get_text().strip(chr(10))}\n```\n"
 
 
-PANEL = {"confluence-information-macro-information": "Info", "confluence-information-macro-note": "Let op",
-         "confluence-information-macro-warning": "Waarschuwing", "confluence-information-macro-tip": "Tip"}
+PANEL = {"confluence-information-macro-information": "Info", "confluence-information-macro-note": "Note",
+         "confluence-information-macro-warning": "Warning", "confluence-information-macro-tip": "Tip"}
 
 
 def prepare(main: BeautifulSoup) -> None:
     for div in main.select("div.confluence-information-macro"):
-        label = next((v for c, v in PANEL.items() if c in div.get("class", [])), "Opmerking")
+        label = next((v for c, v in PANEL.items() if c in div.get("class", [])), "Note")
         body = div.select_one(".confluence-information-macro-body")
         quote = main.new_tag("blockquote")
         quote.append(BeautifulSoup(f"<p><b>{label}</b></p>", "html.parser"))
@@ -41,7 +41,7 @@ def prepare(main: BeautifulSoup) -> None:
 
 
 def read_tree(index_html: str) -> list[tuple[str, int]]:
-    """[(html-bestandsnaam, diepte)] uit de paginaboom van index.html."""
+    """[(html file name, depth)] from the page tree in index.html."""
     soup = BeautifulSoup(index_html, "html.parser")
     root = soup.select_one("#content ul") or soup.find("ul")
     out: list[tuple[str, int]] = []
@@ -61,7 +61,7 @@ def read_tree(index_html: str) -> list[tuple[str, int]]:
 
 
 def convert_space(src: Path, dest: Path, space_name: str | None = None) -> list[str]:
-    """Schrijf Markdown naar dest/docs. Geeft lijst met geschreven paginapaden."""
+    """Write Markdown to dest/docs. Returns the list of written page paths."""
     tree = read_tree((src / "index.html").read_text(encoding="utf-8")) if (src / "index.html").exists() else []
     if not tree:
         tree = [(p.name, 0) for p in sorted(src.glob("*.html")) if p.name != "index.html"]
@@ -78,7 +78,7 @@ def convert_space(src: Path, dest: Path, space_name: str | None = None) -> list[
     written, used = [], set()
     for fname, depth in tree:
         out = outpaths[fname]
-        if out in used:  # dubbele titels
+        if out in used:  # duplicate titles
             out = out[:-3] + f"-{fname[:-5].rsplit('_', 1)[-1]}.md"
             outpaths[fname] = out
         used.add(out)
@@ -93,7 +93,7 @@ def convert_space(src: Path, dest: Path, space_name: str | None = None) -> list[
                 if target in outpaths:
                     el[attr] = posixpath.relpath(outpaths[target], posixpath.dirname(out))
                 elif target and not re.match(r"^(https?:|mailto:|#)", el[attr]) and (src / target).is_file():
-                    dst = "docs/_bijlagen/" + target.replace("..", "")
+                    dst = "docs/_attachments/" + target.replace("..", "")
                     (dest / dst).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy(src / target, dest / dst)
                     el[attr] = posixpath.relpath(dst, posixpath.dirname(out))
@@ -101,9 +101,9 @@ def convert_space(src: Path, dest: Path, space_name: str | None = None) -> list[
         md = re.sub(r"\n{3,}", "\n\n", md).strip()
         target_file = dest / out
         target_file.parent.mkdir(parents=True, exist_ok=True)
-        target_file.write_text(f"# {titles[fname]}\n\n{md}\n\n---\n*Geïmporteerd uit Confluence{' (' + space_name + ')' if space_name else ''}*\n", encoding="utf-8")
+        target_file.write_text(f"# {titles[fname]}\n\n{md}\n\n---\n*Imported from Confluence{' (' + space_name + ')' if space_name else ''}*\n", encoding="utf-8")
         written.append(out)
-    lines = [f"# Documentatie{' ' + space_name if space_name else ''}", ""]
+    lines = [f"# Documentation{' ' + space_name if space_name else ''}", ""]
     for fname, depth in tree:
         lines.append(f"{'  ' * depth}- [{titles[fname]}]({posixpath.relpath(outpaths[fname], 'docs')})")
     (dest / "docs").mkdir(parents=True, exist_ok=True)
@@ -121,15 +121,15 @@ def open_export(path: str, workdir: Path) -> Path:
     return found.parent if found else workdir
 
 
-def publish(dest: Path, gitea_url: str, token: str, repo: str, httpx_client) -> str:
-    """Maak repo aan indien nodig en push dest als commit op main."""
+def publish(dest: Path, gitea_url: str, token: str, repo: str, httpx_client, verify: bool = True) -> str:
+    """Create the repo if needed and push dest as a commit on main."""
     owner, name = repo.split("/")
     h = {"Authorization": f"token {token}"}
     if httpx_client.get(f"{gitea_url}/api/v1/repos/{repo}", headers=h).status_code == 404:
         r = httpx_client.post(f"{gitea_url}/api/v1/user/repos", headers=h, json={"name": name, "default_branch": "main"})
         r.raise_for_status()
     with tempfile.TemporaryDirectory() as tmp:
-        git = lambda *a: subprocess.run(["git", "-c", f"http.extraHeader=Authorization: token {token}", "-c", "user.name=Werkplaats import", "-c", "user.email=import@werkplaats.local", *a], cwd=tmp, check=True, capture_output=True, text=True)
+        git = lambda *a: subprocess.run(["git", "-c", f"http.sslVerify={str(verify).lower()}", "-c", f"http.extraHeader=Authorization: token {token}", "-c", "user.name=Panoptes import", "-c", "user.email=import@panoptes.local", *a], cwd=tmp, check=True, capture_output=True, text=True)
         url = f"{gitea_url}/{repo}.git"
         try:
             git("clone", url, ".")
@@ -139,7 +139,7 @@ def publish(dest: Path, gitea_url: str, token: str, repo: str, httpx_client) -> 
         shutil.copytree(dest / "docs", Path(tmp) / "docs", dirs_exist_ok=True)
         git("add", "-A")
         if not git("status", "--porcelain").stdout.strip():
-            return "geen wijzigingen"
-        git("commit", "-m", "Import Confluence-space")
+            return "no changes"
+        git("commit", "-m", "Import Confluence space")
         git("push", "-u", "origin", "HEAD:main")
     return f"{gitea_url}/{repo}"

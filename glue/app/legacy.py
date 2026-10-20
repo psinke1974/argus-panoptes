@@ -1,4 +1,4 @@
-"""Oude Jira-sleutels (PROJ-12) -> OpenProject-id, uit de statusbestanden van de importer."""
+"""Old Jira keys (PROJ-12) -> OpenProject id, read from the importer's state files."""
 import json
 from pathlib import Path
 
@@ -8,7 +8,7 @@ _cache: tuple[tuple, dict[str, int]] = ((), {})
 
 
 def load() -> dict[str, int]:
-    """Alle jira-*.json uit LEGACY_KEYS_DIR; herlaadt zodra bestanden wijzigen."""
+    """All jira-*.json from LEGACY_KEYS_DIR; reloads when the files change."""
     global _cache
     files = sorted(Path(config.LEGACY_KEYS_DIR).glob("jira-*.json")) if config.LEGACY_KEYS_DIR else []
     sig = tuple((f.name, f.stat().st_mtime_ns) for f in files)

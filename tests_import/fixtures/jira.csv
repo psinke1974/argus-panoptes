@@ -1,16 +1,16 @@
 Summary,Issue key,Issue id,Issue Type,Status,Priority,Assignee,Reporter,Created,Description,Parent,Parent id,Labels,Labels,Sprint,Comment,Comment,Outward issue link (Blocks)
-Inloggen werkt niet,DEMO-2,10002,Bug,In Progress,High,Jan Jansen,Piet Pietersen,20/Oct/26 9:00 AM,"h2. Probleem
-Gebruikers kunnen *niet* inloggen.
+Login does not work,DEMO-2,10002,Bug,In Progress,High,Jan Jansen,Piet Pietersen,20/Oct/26 9:00 AM,"h2. Problem
+Users *cannot* log in.
 
 {code:python}
 print('x')
 {code}
-* stap een
-* stap twee
+* step one
+* step two
 
-||Naam||Waarde||
+||Name||Value||
 |a|b|
-[Docs|https://example.com]",DEMO-1,10001,backend,urgent,Sprint 4,"21/Oct/26 10:00 AM;abc123;Ik kijk ernaar, zie {{login.py}}",,
-Nieuwe portal,DEMO-1,10001,Epic,To Do,Medium,,Piet Pietersen,19/Oct/26 9:00 AM,Grote epic.,,,,,,,,DEMO-4
-Test schrijven,DEMO-3,10003,Sub-task,Done,Low,,Jan Jansen,22/Oct/26 9:00 AM,,DEMO-2,10002,,,,,,
-Onbekend type,DEMO-4,10004,Spike,Wacht op klant,Wishlist,,,,,,,,,,,,
+[Docs|https://example.com]",DEMO-1,10001,backend,urgent,Sprint 4,"21/Oct/26 10:00 AM;abc123;I will look into it, see {{login.py}}",,
+New portal,DEMO-1,10001,Epic,To Do,Medium,,Piet Pietersen,19/Oct/26 9:00 AM,Big epic.,,,,,,,,DEMO-4
+Write tests,DEMO-3,10003,Sub-task,Done,Low,,Jan Jansen,22/Oct/26 9:00 AM,,DEMO-2,10002,,,,,,
+Unknown type,DEMO-4,10004,Spike,Waiting for customer,Wishlist,,,,,,,,,,,,

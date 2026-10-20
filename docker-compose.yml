@@ -1,5 +1,6 @@
-# Werkplaats: EU-gehoste, open-source werkplek voor projecten, git en documentatie.
-# OpenProject (werkpakketten, boards, wiki) + Gitea (git) + glue (koppeling & slimmigheden)
+# Panoptes (single-stack development setup): open-source, EU-hostable workspace for projects, git and docs.
+# OpenProject (work packages, boards, wiki) + Gitea (git) + glue (integration & smart extras).
+# For per-customer deployments with HTTPS see deploy/.
 services:
   openproject:
     image: openproject/openproject:17
@@ -8,8 +9,8 @@ services:
     environment:
       OPENPROJECT_HOST__NAME: localhost:8080
       OPENPROJECT_HTTPS: "false"
-      SECRET_KEY_BASE: ${OP_SECRET_KEY_BASE:?zet OP_SECRET_KEY_BASE in .env}
-      OPENPROJECT_DEFAULT__LANGUAGE: nl
+      SECRET_KEY_BASE: ${OP_SECRET_KEY_BASE:?set OP_SECRET_KEY_BASE in .env}
+      OPENPROJECT_DEFAULT__LANGUAGE: ${LANGUAGE:-en}
     volumes:
       - op_pgdata:/var/openproject/pgdata
       - op_assets:/var/openproject/assets
@@ -32,7 +33,7 @@ services:
     ports: ["8090:8090"]
     env_file: .env
     volumes:
-      - ./.import-state:/data/import-state:ro   # oude Jira-sleutels (PROJ-12) -> werkpakket
+      - ./.import-state:/data/import-state:ro   # old Jira keys (PROJ-12) -> work package
     depends_on: [openproject, gitea]
 
 volumes:

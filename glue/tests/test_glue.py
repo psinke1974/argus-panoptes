@@ -12,7 +12,7 @@ from app.release_notes import build_release_notes
 
 def test_parse_refs():
     assert parse_refs("Fixes OP#12 en OP#7") == [Ref(12, True), Ref(7, False)]
-    assert parse_refs("geen refs") == []
+    assert parse_refs("no refs") == []
     assert parse_refs("OP#5 ... closes OP#5") == [Ref(5, True)]
 
 
@@ -28,7 +28,7 @@ class FakeOP:
         return True
 
     async def get_wp(self, i):
-        return {"subject": f"Taak {i}", "_links": {"type": {"title": "Bug" if i % 2 else "Feature"}}}
+        return {"subject": f"Task {i}", "_links": {"type": {"title": "Bug" if i % 2 else "Feature"}}}
 
 
 def signed(payload):
@@ -55,7 +55,7 @@ def test_push_closes_on_default_branch(monkeypatch):
 
 def test_release_notes():
     md = asyncio.run(build_release_notes(FakeOP(), ["fix OP#1", "OP#2 feat"], "v1 → v2"))
-    assert "## Bug" in md and "## Feature" in md and "Taak 1" in md
+    assert "## Bug" in md and "## Feature" in md and "Task 1" in md
 
 
 def test_changed_docs_and_urls():
@@ -84,6 +84,6 @@ def test_legacy_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LEGACY_KEYS_DIR", str(tmp_path))
     assert legacy.load() == {"DEMO-2": 43, "DEMO-1": 41}
     keys = legacy.load()
-    assert parse_refs("fixes DEMO-2, zie ook demo-1 en UTF-8 en OTHER-9", keys) == [Ref(43, True), Ref(41, False)]
-    assert parse_refs("DEMO-2 en OP#43", keys) == [Ref(43, False)]
+    assert parse_refs("fixes DEMO-2, see also demo-1 and UTF-8 and OTHER-9", keys) == [Ref(43, True), Ref(41, False)]
+    assert parse_refs("DEMO-2 and OP#43", keys) == [Ref(43, False)]
     assert parse_refs("DEMO-2", None) == []

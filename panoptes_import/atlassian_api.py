@@ -1,4 +1,4 @@
-"""Directe import uit Jira (Cloud/Server) en Confluence Cloud via hun REST-API's."""
+"""Direct import from Jira (Cloud/Server) and Confluence Cloud through their REST APIs."""
 import html
 import re
 from pathlib import Path
@@ -12,7 +12,7 @@ from .jira import Issue
 
 class Client:
     def __init__(self, base_url: str, email: str | None, token: str, transport=None):
-        auth = (email, token) if email else None  # zonder e-mail: Bearer (Jira Server/DC Personal Access Token)
+        auth = (email, token) if email else None  # without e-mail: Bearer (Jira Server/DC Personal Access Token)
         headers = {} if email else {"Authorization": f"Bearer {token}"}
         self.base = base_url.rstrip("/")
         self.http = httpx.Client(base_url=self.base, auth=auth, headers=headers, timeout=60, follow_redirects=True, transport=transport)
@@ -20,7 +20,7 @@ class Client:
     def get(self, path: str, **params) -> dict:
         r = self.http.get(path, params=params)
         if r.status_code in (401, 403):
-            raise SystemExit(f"Geen toegang ({r.status_code}) tot {self.base}{path}: controleer e-mail/token en rechten")
+            raise SystemExit(f"No access ({r.status_code}) to {self.base}{path}: check e-mail/token and permissions")
         r.raise_for_status()
         return r.json()
 
@@ -63,13 +63,13 @@ def fetch_jira_issues(c: Client, project_key: str, server: bool = False) -> list
     jql = f'project = "{project_key}" ORDER BY key ASC'
     raws, token, start = [], None, 0
     while True:
-        if server:  # Jira Server/DC: klassieke zoekopdracht met startAt
+        if server:  # Jira Server/DC: classic search with startAt
             page = c.get("/rest/api/2/search", jql=jql, fields="*all", startAt=start, maxResults=100)
             raws += page["issues"]
             start += len(page["issues"])
             if not page["issues"] or start >= page["total"]:
                 break
-        else:  # Cloud: /search/jql met nextPageToken
+        else:  # Cloud: /search/jql with nextPageToken
             params = {"jql": jql, "fields": "*all", "maxResults": 100}
             if token:
                 params["nextPageToken"] = token
@@ -79,7 +79,7 @@ def fetch_jira_issues(c: Client, project_key: str, server: bool = False) -> list
             if page.get("isLast", True) or not token:
                 break
     issues = [to_issue(r, sprint_field) for r in raws]
-    for raw, issue in zip(raws, issues):  # comments: zoekresultaat kan afgekapt zijn
+    for raw, issue in zip(raws, issues):  # comments: the search result may be truncated
         cm = raw["fields"].get("comment") or {}
         if cm.get("total", 0) > len(cm.get("comments", [])):
             more = c.get(f"/rest/api/2/issue/{issue.key}/comment", maxResults=1000)["comments"]
@@ -88,10 +88,10 @@ def fetch_jira_issues(c: Client, project_key: str, server: bool = False) -> list
 
 
 def export_confluence_space(c: Client, space_key: str, dest: Path) -> list[str]:
-    """Haal een space op via de v2-API en schrijf een export in dezelfde vorm als de HTML-export. Geeft waarschuwingen terug."""
+    """Fetch a space through the v2 API and write an export shaped like the HTML export. Returns warnings."""
     spaces = c.get("/wiki/api/v2/spaces", keys=space_key)["results"]
     if not spaces:
-        raise SystemExit(f"Space {space_key} niet gevonden")
+        raise SystemExit(f"Space {space_key} not found")
     sid = spaces[0]["id"]
     pages, path, params = [], f"/wiki/api/v2/spaces/{sid}/pages", {"body-format": "storage", "limit": 100}
     while path:

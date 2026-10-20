@@ -1,0 +1,20 @@
+# Shared reverse proxy (Caddy): automatic HTTPS (Let's Encrypt, or a local CA for *.localhost)
+# and one routing file per customer in ./tenants/.
+name: panoptes-proxy
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./tenants:/etc/caddy/tenants:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [proxy]
+networks:
+  proxy:
+    name: panoptes-proxy
+volumes:
+  caddy_data:
+  caddy_config:

@@ -48,8 +48,8 @@ async def gitea_hook(
         for c in p.get("commits", []):
             for ref in parse_refs(c["message"], legacy.load()):
                 first = c["message"].splitlines()[0]
-                docs = "".join(f"\n- Documentatie: [{d}]({doc_url(repo, d)})" for d in changed_docs(c))
-                await op.comment(ref.wp_id, f"Commit in **{repo}**: [{first}]({c['url']}) door {c['author']['name']}{docs}")
+                docs = "".join(f"\n- Documentation: [{d}]({doc_url(repo, d)})" for d in changed_docs(c))
+                await op.comment(ref.wp_id, f"Commit in **{repo}**: [{first}]({c['url']}) by {c['author']['name']}{docs}")
                 if ref.closes and on_default:
                     await op.set_status(ref.wp_id, config.STATUS_CLOSED)
                 handled += 1
@@ -59,10 +59,10 @@ async def gitea_hook(
         action = p.get("action")
         for ref in parse_refs(f"{pr['title']}\n{pr.get('body') or ''}", legacy.load()):
             if action == "opened":
-                await op.comment(ref.wp_id, f"Pull request geopend in **{repo}**: [{pr['title']}]({pr['html_url']})")
+                await op.comment(ref.wp_id, f"Pull request opened in **{repo}**: [{pr['title']}]({pr['html_url']})")
                 await op.set_status(ref.wp_id, config.STATUS_IN_PROGRESS)
             elif action == "closed" and pr.get("merged"):
-                await op.comment(ref.wp_id, f"Pull request gemerged: [{pr['title']}]({pr['html_url']})")
+                await op.comment(ref.wp_id, f"Pull request merged: [{pr['title']}]({pr['html_url']})")
                 if ref.closes:
                     await op.set_status(ref.wp_id, config.STATUS_CLOSED)
             else:
@@ -74,7 +74,7 @@ async def gitea_hook(
 
 @app.get("/release-notes")
 async def release_notes(repo: str, base: str, head: str):
-    """Markdown release notes uit commits tussen twee tags/branches, gegroepeerd per type werkpakket."""
+    """Markdown release notes from the commits between two tags/branches, grouped by work package type."""
     async with httpx.AsyncClient(base_url=config.GITEA_URL, headers={"Authorization": f"token {config.GITEA_TOKEN}"}) as g:
         r = await g.get(f"/api/v1/repos/{repo}/compare/{base}...{head}")
         r.raise_for_status()

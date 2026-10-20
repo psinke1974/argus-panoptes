@@ -1,4 +1,4 @@
-"""Docs-in-repo: Markdown in git is de bron; dit portaal toont het, doorzoekbaar en met backlinks naar werkpakketten."""
+"""Docs-in-repo: Markdown in git is the source; this portal shows it, searchable and with backlinks to work packages."""
 import html
 import mimetypes
 import posixpath
@@ -37,7 +37,7 @@ _LINK = re.compile(r"(!?\[[^\]]*\])\((?!https?:|mailto:|#|/)([^)\s]+)\)")
 
 
 def rewrite_links(md: str, repo: str, path: str) -> str:
-    """Relatieve links in een doc -> portaal-URL's (.md = pagina, rest = bestand via /_raw/)."""
+    """Relative links in a doc -> portal URLs (.md = page, anything else = file via /_raw/)."""
     def fix(m):
         target, _, frag = m.group(2).partition("#")
         resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
@@ -51,7 +51,7 @@ def page(repo: str, nav: list[str], title: str, body: str, q: str = "") -> HTMLR
     links = "".join(f'<a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a>' for p in nav)
     return HTMLResponse(
         f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title><style>{STYLE}</style>"
-        f'<nav><b>{html.escape(repo)}</b><form action="/docs/{repo}/search"><input name=q placeholder="Zoeken…" value="{html.escape(q)}"></form>{links}</nav>'
+        f'<nav><b>{html.escape(repo)}</b><form action="/docs/{repo}/search"><input name=q placeholder="Search…" value="{html.escape(q)}"></form>{links}</nav>'
         f"<main>{body}</main>"
     )
 
@@ -63,7 +63,7 @@ def gitea() -> httpx.AsyncClient:
 async def doc_paths(g: httpx.AsyncClient, repo: str) -> list[str]:
     info = await g.get(f"/api/v1/repos/{repo}")
     if info.status_code != 200:
-        raise HTTPException(404, "repo niet gevonden")
+        raise HTTPException(404, "repo not found")
     tree = await g.get(f"/api/v1/repos/{repo}/git/trees/{info.json()['default_branch']}", params={"recursive": "true", "per_page": 1000})
     return sorted(t["path"] for t in tree.json().get("tree", []) if t["type"] == "blob" and is_doc(t["path"]))
 
@@ -71,7 +71,7 @@ async def doc_paths(g: httpx.AsyncClient, repo: str) -> list[str]:
 async def raw(g: httpx.AsyncClient, repo: str, path: str) -> str:
     r = await g.get(f"/api/v1/repos/{repo}/raw/{quote(path)}")
     if r.status_code != 200:
-        raise HTTPException(404, "pagina niet gevonden")
+        raise HTTPException(404, "page not found")
     return r.text
 
 
@@ -80,7 +80,7 @@ async def index(owner: str, name: str):
     repo = f"{owner}/{name}"
     async with gitea() as g:
         paths = await doc_paths(g, repo)
-    body = "<h1>Documentatie</h1>" + ("".join(f'<p><a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a></p>' for p in paths) or "<p>Geen .md-bestanden in <code>docs/</code> of de root.</p>")
+    body = "<h1>Documentation</h1>" + ("".join(f'<p><a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a></p>' for p in paths) or "<p>No .md files in <code>docs/</code> or the repository root.</p>")
     return page(repo, paths, f"Docs {repo}", body)
 
 
@@ -95,8 +95,8 @@ async def search(owner: str, name: str, q: str = ""):
             lines = [l.strip() for l in text.splitlines() if q.lower() in l.lower()]
             if q and lines:
                 hits.append((p, lines[0]))
-    body = f"<h1>Zoeken: {html.escape(q)}</h1>" + ("".join(f'<p><a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a><br><small>{html.escape(l[:200])}</small></p>' for p, l in hits) or "<p>Niets gevonden.</p>")
-    return page(repo, paths, "Zoeken", body, q)
+    body = f"<h1>Search: {html.escape(q)}</h1>" + ("".join(f'<p><a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a><br><small>{html.escape(l[:200])}</small></p>' for p, l in hits) or "<p>Nothing found.</p>")
+    return page(repo, paths, "Search", body, q)
 
 
 @router.get("/{owner}/{name}/_raw/{path:path}")
@@ -123,7 +123,7 @@ async def view(owner: str, name: str, path: str):
         for ref in parse_refs(c["commit"]["message"], legacy.load()):
             tickets.setdefault(ref.wp_id, c["commit"]["message"].splitlines()[0])
     back = "".join(f'<li><a href="{config.OP_PUBLIC_URL}/work_packages/{i}">OP#{i}</a> – {html.escape(m)}</li>' for i, m in tickets.items())
-    aside = f"<aside><b>Gerelateerde werkpakketten</b><ul>{back}</ul></aside>" if back else ""
-    # Gitea herschrijft afbeeldingsadressen naar zijn eigen /media/-URL; zet ze terug naar het portaal
+    aside = f"<aside><b>Related work packages</b><ul>{back}</ul></aside>" if back else ""
+    # Gitea rewrites image URLs to its own /media/ URL; point them back at the portal
     body = re.sub(r'src="[^"]*/media/(docs/[^"]+?/_raw/[^"]+)"', r'src="/\1"', rendered.text)
     return page(repo, paths, path, body + aside)

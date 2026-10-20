@@ -7,7 +7,7 @@ class OpenProject:
     def __init__(self, client: httpx.AsyncClient | None = None):
         self.http = client or httpx.AsyncClient(
             base_url=config.OP_URL, auth=("apikey", config.OP_API_KEY), timeout=15,
-            headers={"Host": config.OP_HOST_HEADER}
+            headers={"Host": config.OP_HOST_HEADER, **({"X-Forwarded-Proto": config.OP_FORWARDED_PROTO} if config.OP_FORWARDED_PROTO else {})}
         )
 
     async def get_wp(self, wp_id: int) -> dict:

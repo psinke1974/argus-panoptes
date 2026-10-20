@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 627" width="1200" height="627">
+  <defs>
+    <radialGradient id="bg" cx="25%" cy="45%" r="80%">
+      <stop offset="0" stop-color="#1b2a4a"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </radialGradient>
+    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffe9a8"/>
+      <stop offset="0.55" stop-color="#e8b84a"/>
+      <stop offset="1" stop-color="#9c6b12"/>
+    </radialGradient>
+    <g id="mini">
+      <path d="M-22 0 Q0 -16 22 0 Q0 16 -22 0 Z" fill="none" stroke="#e8b84a" stroke-width="2.2"/>
+      <circle r="5.5" fill="#e8b84a"/>
+    </g>
+  </defs>
+  <rect width="1200" height="627" fill="url(#bg)"/>
+
+  <!-- the hundred eyes (a scatter of small ones) -->
+  <g opacity="0.55">
+    <use href="#mini" x="610" y="80"/><use href="#mini" x="700" y="130" transform="rotate(-8 700 130)"/>
+    <use href="#mini" x="800" y="70"/><use href="#mini" x="905" y="120" transform="rotate(10 905 120)"/>
+    <use href="#mini" x="1010" y="75"/><use href="#mini" x="1110" y="140" transform="rotate(-6 1110 140)"/>
+    <use href="#mini" x="640" y="545"/><use href="#mini" x="750" y="580" transform="rotate(6 750 580)"/>
+    <use href="#mini" x="860" y="535"/><use href="#mini" x="975" y="575" transform="rotate(-9 975 575)"/>
+    <use href="#mini" x="1085" y="530"/>    <use href="#mini" x="590" y="300" transform="rotate(-10 590 300)"/>
+  </g>
+
+  <!-- the big eye -->
+  <g transform="translate(870 315)">
+    <path d="M-250 0 Q0 -190 250 0 Q0 190 -250 0 Z" fill="#0b1220" stroke="#e8b84a" stroke-width="7"/>
+    <circle r="118" fill="url(#iris)"/>
+    <g stroke="#9c6b12" stroke-width="2" opacity="0.5">
+      <line x1="0" y1="-118" x2="0" y2="-62"/><line x1="0" y1="118" x2="0" y2="62"/>
+      <line x1="-118" y1="0" x2="-62" y2="0"/><line x1="118" y1="0" x2="62" y2="0"/>
+      <line x1="-84" y1="-84" x2="-44" y2="-44"/><line x1="84" y1="84" x2="44" y2="44"/>
+      <line x1="84" y1="-84" x2="44" y2="-44"/><line x1="-84" y1="84" x2="-44" y2="44"/>
+    </g>
+    <circle r="58" fill="#0b1220"/>
+    <!-- project-board glyph in the pupil: three columns of cards -->
+    <g fill="#e8b84a">
+      <rect x="-38" y="-30" width="20" height="14" rx="3"/><rect x="-38" y="-10" width="20" height="14" rx="3"/><rect x="-38" y="10" width="20" height="14" rx="3"/>
+      <rect x="-10" y="-30" width="20" height="14" rx="3"/><rect x="-10" y="-10" width="20" height="14" rx="3"/>
+      <rect x="18" y="-30" width="20" height="14" rx="3"/>
+    </g>
+    <circle cx="-42" cy="-48" r="14" fill="#fff" opacity="0.85"/>
+  </g>
+
+  <!-- text -->
+  <g font-family="Georgia, 'Times New Roman', serif" fill="#f4ead2">
+    <text x="70" y="250" font-size="104" font-weight="700" letter-spacing="2">Panoptes</text>
+    <text x="74" y="310" font-size="36" font-style="italic" fill="#e8b84a">the all-seeing project tracker</text>
+  </g>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#c9d3e6" font-size="26">
+    <text x="74" y="390">Open source · self-host or let someone host it</text>
+    <text x="74" y="430">Boards &amp; tickets · git · docs, wired together</text>
+    <text x="74" y="470">Importers for Jira &amp; Confluence</text>
+  </g>
+  <g font-family="'SF Mono', Menlo, Consolas, monospace" font-size="24" fill="#e8b84a">
+    <text x="74" y="560">github.com/psinke1974/argus-panoptes</text>
+  </g>
+</svg>
