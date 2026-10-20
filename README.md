@@ -54,9 +54,16 @@ python -m werkplaats_import confluence space-export.zip --space-name TEAM --repo
 - **Jira:** typen, statussen en prioriteiten worden gemapt (NL/EN; onbekend = fallback + rapport), hiërarchie (epic/parent), comments, `blocks`/`duplicates`/`relates`-links. Titel krijgt `[PROJ-123]` voor, zodat oude sleutels vindbaar blijven. Jira-wikimarkup wordt Markdown. Herhaalbaar: `.import-state/` onthoudt wat al is aangemaakt.
 - **Gebruikers:** `--user-map` (csv: `jira_name,op_login`) koppelt assignees; anders komt de naam in de beschrijving.
 - **Confluence:** paginaboom wordt mappenstructuur in `docs/`, bijlagen naar `docs/_bijlagen/`, links tussen pagina's blijven werken, info-/waarschuwingsblokken, codeblokken en tabellen worden Markdown. Resultaat staat meteen in het docs-portaal.
+- **Rechtstreeks via de API** (geen export nodig): zet je token in de omgeving en draai
+  ```bash
+  export ATLASSIAN_TOKEN=...            # Cloud: id.atlassian.com > Beveiliging > API-tokens
+  python -m werkplaats_import jira-api --url https://bedrijf.atlassian.net --email jij@bedrijf.nl --project PROJ --identifier proj
+  python -m werkplaats_import confluence-api --url https://bedrijf.atlassian.net --email jij@bedrijf.nl --space TEAM --repo owner/naam
+  ```
+  Jira Server/Data Center: `--server` en zonder `--email` (Personal Access Token als Bearer). Neemt ook bijlagen mee en koppelt assignees automatisch op e-mailadres als Jira dat teruggeeft. Confluence-macro's die niet bestaan in Markdown worden gemeld in plaats van stil weggelaten.
 - **Niet (nog):** bijlagen bij Jira-issues, worklogs, issue-historie, aangepaste velden, workflows, Confluence-comments en -rechten, Confluence-XML-export.
 - Types per project aanzetten kan niet via de OpenProject-API; de importer doet dat via `scripts/op-enable-types.sh`.
-- Getest met eigen fixtures (`tests_import/`), nog niet met een echte klantexport.
+- Getest met eigen fixtures en een nep-Atlassian (`tests_import/mock_atlassian.py`), nog niet tegen een echte Jira/Confluence-omgeving of klantexport.
 
 ## End-to-end test
 `python scripts/e2e.py` (stack moet draaien) maakt een project, werkpakket en repo aan en toetst de hele keten.
