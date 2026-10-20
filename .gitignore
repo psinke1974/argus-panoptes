@@ -5,3 +5,4 @@ __pycache__/
 tenants/
 deploy/proxy/tenants/*.caddy
 !deploy/proxy/tenants/00-placeholder.caddy
+backups/

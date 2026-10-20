@@ -3,6 +3,8 @@
 
   tenantctl.py create acme [--base-domain panoptes.example.com] [--admin-email admin@acme.com]
   tenantctl.py list
+  tenantctl.py backup acme [--out backups]      (consistent: the stack is stopped for ~1 min)
+  tenantctl.py restore acme backups/acme-<timestamp>.tar --yes
   tenantctl.py destroy acme --yes        (deletes containers AND data volumes)
 
 Local trial: the default base domain is 'localhost' (acme.localhost, git.acme.localhost, docs.acme.localhost, local TLS).
@@ -12,6 +14,9 @@ import argparse
 import re
 import secrets
 import shutil
+import tarfile
+import tempfile
+import datetime
 import ssl
 import subprocess
 import sys
@@ -173,6 +178,80 @@ def list_tenants(_) -> None:
             print(f"{d.name:20} https://{e['OP_HOST']:40} {'running' if running else 'stopped'}")
 
 
+VOLUMES = ("op_pgdata", "op_assets", "gitea_data")
+
+
+def volume(t: str, name: str) -> str:
+    return f"panoptes-{t}_{name}"
+
+
+def backup(a) -> None:
+    """One tar with: the three data volumes, the tenant .env (secrets!), the import state and the proxy route."""
+    t = a.name
+    env = TENANTS / t / ".env"
+    if not env.exists():
+        sys.exit(f"unknown tenant {t}")
+    out_dir = Path(a.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive = out_dir / f"{t}-{stamp}.tar"
+    print("• stopping the stack for a consistent snapshot")
+    compose(t, "stop")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for v in VOLUMES:
+                print(f"• archiving volume {v}")
+                sh("docker", "run", "--rm", "-v", f"{volume(t, v)}:/data:ro", "-v", f"{tmp}:/backup", "alpine", "tar", "czf", f"/backup/{v}.tgz", "-C", "/data", ".")
+            with tarfile.open(archive, "w") as tar:
+                for v in VOLUMES:
+                    tar.add(Path(tmp) / f"{v}.tgz", arcname=f"{v}.tgz")
+                tar.add(env, arcname="env")
+                tar.add(TENANTS / t / "import-state", arcname="import-state")
+                route = PROXY_DIR / "tenants" / f"{t}.caddy"
+                if route.exists():
+                    tar.add(route, arcname="route.caddy")
+    finally:
+        compose(t, "start")
+    archive.chmod(0o600)  # contains the tenant secrets
+    print(f"backup written: {archive} ({archive.stat().st_size // 1024 // 1024} MB). Keep it somewhere safe: it contains the tenant secrets.")
+
+
+def restore(a) -> None:
+    """Restore into the same tenant name (replaces everything currently stored for it)."""
+    t = a.name
+    if not a.yes:
+        sys.exit("restore REPLACES all data of this tenant with the backup; repeat with --yes")
+    archive = Path(a.archive).resolve()
+    if not archive.exists():
+        sys.exit(f"{archive} not found")
+    tdir = TENANTS / t
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(archive) as tar:
+            tar.extractall(tmp, filter="data")
+        tmp = Path(tmp)
+        tdir.mkdir(parents=True, exist_ok=True)
+        if (tdir / ".env").exists():
+            compose(t, "down", "-v")
+        shutil.copy(tmp / "env", tdir / ".env")
+        (tdir / ".env").chmod(0o600)
+        set_env(tdir / ".env", "TENANT_DIR", str(tdir))  # the backup may come from another machine/path
+        shutil.rmtree(tdir / "import-state", ignore_errors=True)
+        shutil.copytree(tmp / "import-state", tdir / "import-state")
+        for v in VOLUMES:
+            print(f"• restoring volume {v}")
+            sh("docker", "volume", "create", volume(t, v))
+            sh("docker", "run", "--rm", "-v", f"{volume(t, v)}:/data", "-v", f"{tmp}:/backup:ro", "alpine", "sh", "-c",
+               f"rm -rf /data/* /data/.[!.]* 2>/dev/null; tar xzf /backup/{v}.tgz -C /data")
+        if (tmp / "route.caddy").exists():
+            shutil.copy(tmp / "route.caddy", PROXY_DIR / "tenants" / f"{t}.caddy")
+    sh("docker", "network", "create", "panoptes-proxy", check=False)
+    reload_proxy()
+    compose(t, "up", "-d")
+    e = read_env(tdir / ".env")
+    wait_ready(f"https://{e['OP_HOST']}/health_checks/default", f"OpenProject of {t}")
+    print(f"tenant {t} restored from {archive.name}")
+
+
 def destroy(a) -> None:
     t = a.name
     if not a.yes:
@@ -196,6 +275,15 @@ def main() -> None:
     c.add_argument("--language", default="en", choices=["en", "nl"])
     c.set_defaults(fn=create)
     sub.add_parser("list").set_defaults(fn=list_tenants)
+    b = sub.add_parser("backup")
+    b.add_argument("name")
+    b.add_argument("--out", default="backups")
+    b.set_defaults(fn=backup)
+    r = sub.add_parser("restore")
+    r.add_argument("name")
+    r.add_argument("archive")
+    r.add_argument("--yes", action="store_true")
+    r.set_defaults(fn=restore)
     d = sub.add_parser("destroy")
     d.add_argument("name")
     d.add_argument("--yes", action="store_true")

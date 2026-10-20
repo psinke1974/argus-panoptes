@@ -24,7 +24,31 @@ It is built on [OpenProject](https://www.openproject.org) (GPLv3) and [Gitea](ht
 | Git | Gitea | MIT | http://localhost:3000 |
 | Integration + extras | `glue/` (FastAPI) | GPLv3 | http://localhost:8090 |
 
-## Quick start (single stack, for development)
+## Try it in about 5 minutes
+You need Docker (at least 4 GB RAM available to it), Python 3.10+, and free ports 80 and 443.
+
+```bash
+git clone https://github.com/psinke1974/argus-panoptes.git && cd argus-panoptes
+python3 deploy/tenantctl.py create demo      # first start pulls images: a few minutes
+```
+This starts a complete, isolated stack with HTTPS on your machine and prints the URLs and where the generated credentials are (`tenants/demo/.env`):
+OpenProject at `https://demo.localhost`, Gitea at `https://git.demo.localhost`, the docs portal at `https://docs.demo.localhost`. Your browser will warn about the local certificate authority; accept it for this trial.
+
+Want something to look at without a real Jira? Import the bundled fake Jira/Confluence:
+```bash
+pip install -r panoptes_import/requirements.txt
+python3 tests_import/mock_atlassian.py &                 # fake Jira/Confluence API on :8099
+export ATLASSIAN_TOKEN=dummy
+python3 -m panoptes_import --env tenants/demo/.env jira-api --url http://localhost:8099 --email a@b.nl --project API --identifier api-demo
+python3 -m panoptes_import --env tenants/demo/.env confluence-api --url http://localhost:8099 --email a@b.nl --space TEAM --repo panoptes/confluence-demo
+```
+Then open the OpenProject project `api-demo` and the docs portal at `https://docs.demo.localhost/docs/panoptes/confluence-demo`.
+
+`python3 deploy/tenantctl.py destroy demo --yes` removes it all again.
+
+<details>
+<summary>Single-stack development setup (without the proxy)</summary>
+
 ```bash
 cp .env.example .env            # set OP_SECRET_KEY_BASE (openssl rand -hex 64) and WEBHOOK_SECRET
 docker compose up -d --build
@@ -32,12 +56,14 @@ docker compose up -d --build
 1. OpenProject: log in as `admin` / `admin`, change the password immediately, create an API token (My account > Access tokens) and put it in `.env` as `OP_API_KEY`.
 2. Gitea: create an admin with `docker compose exec -u git gitea gitea admin user create --admin --username ... --password ... --email ...`, create a token and put it in `.env` as `GITEA_TOKEN`.
 3. `docker compose up -d glue`, then add a webhook in your Gitea repo: `http://glue:8090/hooks/gitea`, secret = `WEBHOOK_SECRET`, events: push + pull request.
+</details>
 
 ## What it does
 - `OP#123` in a commit or PR text: comment with a link on work package 123.
 - After a Jira import the old keys work too: `fixes PROJ-12` in a commit or PR is translated to the new work package through `.import-state/` (only keys the importer knows).
 - PR opened: status moves to *In progress*. `fixes OP#123` + merge (or a push to the default branch): status moves to *Closed*.
 - `GET /release-notes?repo=owner/name&base=v1&head=v2`: Markdown release notes grouped by work package type.
+- `GET /stale?project=<identifier>&days=30` (`&format=json` for machines): open work packages nobody has touched for N days, grouped by assignee. Commits and PR notes from the glue count as activity, so git work keeps tickets fresh.
 - Docs-in-repo: Markdown in `docs/` (and the repo root) is served at `http://localhost:8090/docs/<owner>/<repo>` with navigation, search and a list of related work packages (from the commits that touched the file). A commit with `OP#123` that changes docs adds a link to that page on the work package.
   - Deliberate choice: the OpenProject API can only read wiki pages, not write them. Git is therefore the source of truth and the glue provides the reading portal.
 
@@ -72,21 +98,25 @@ The same code runs on a customer's own server (self-hosted) or as a hosted servi
 python3 deploy/tenantctl.py create acme --admin-email admin@acme.com         # local trial: https://acme.localhost
 python3 deploy/tenantctl.py create acme --base-domain panoptes.example.com   # production: acme.panoptes.example.com
 python3 deploy/tenantctl.py list
+python3 deploy/tenantctl.py backup acme                                      # stops the stack ~1 min, writes backups/acme-<timestamp>.tar
+python3 deploy/tenantctl.py restore acme backups/acme-<timestamp>.tar --yes  # replaces all data of the tenant
 python3 deploy/tenantctl.py destroy acme --yes                               # removes containers AND data
 ```
 - Creates `acme.<base>` (OpenProject), `git.acme.<base>` (Gitea, HTTPS clone only) and `docs.acme.<base>` (docs portal), generates all secrets in `tenants/acme/.env` (chmod 600) and bootstraps the admin accounts and API tokens.
 - Production needs wildcard DNS (`*.panoptes.example.com`) pointing at the server; Caddy then obtains Let's Encrypt certificates. Locally, `*.localhost` uses Caddy's internal CA (accept the browser warning, or run `caddy trust` inside the Caddy container's CA).
 - Rough sizing: about 2 GB RAM per tenant for OpenProject, plus a little for Gitea and the glue.
 - **Known limitation:** the docs portal reads all repositories with the service token, so it is protected with HTTP basic auth (`docs` / `DOCS_PASSWORD` in the tenant `.env`) until proper SSO exists. Webhooks are not reachable from outside.
-- Not built yet: per-tenant backups and restore tests, SSO (Keycloak/Authentik), billing.
+- Backups contain all tenant data **and secrets**: store them encrypted and off the server. Restore is tested (destroy, restore, smoke test).
+- Not built yet: scheduled/encrypted offsite backups, SSO (Keycloak/Authentik), billing.
 
-## End-to-end test
-`python scripts/e2e.py` (the dev stack must be running) creates a project, work package and repo and tests the whole chain.
+## End-to-end tests
+- `python scripts/e2e.py`: dev stack; creates a project, work package and repo and tests the whole chain.
+- `python scripts/tenant_smoke.py acme`: tenant stack; routing, docs-portal protection, webhook isolation, stale report and the git-to-ticket chain via an old Jira key.
 
 ## Roadmap
-- Stale detector: flag work packages without commit activity.
+- Stale detector: push a weekly digest (Slack/e-mail) instead of just the endpoint.
 - EU-hosted LLM (e.g. Mistral): work package summaries and draft docs from closed tickets.
-- Tenant backups, SSO, billing.
+- Scheduled offsite backups, SSO, billing.
 - Test the importers against real Jira/Confluence exports.
 
 ## Tests

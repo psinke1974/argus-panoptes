@@ -35,6 +35,10 @@ if gt.get("/repos/panoptes/confluence-demo").status_code == 200:
     r = http.get(f"{docs}/docs/panoptes/confluence-demo", auth=auth)
     check(r.status_code == 200 and "docs/home.md" in r.text, "docs portal lists the imported Confluence pages")
 
+if Path(f"tenants/{tenant}/import-state/jira-api-demo.json").exists():
+    r = http.get(f"{docs}/stale", params={"project": "api-demo", "days": 0, "format": "json"}, auth=auth)
+    check(r.status_code == 200 and "items" in r.json(), "stale-ticket report works")
+
 # git -> ticket chain with an old Jira key from the import mapping
 state = Path(f"tenants/{tenant}/import-state/jira-api-demo.json")
 if state.exists():

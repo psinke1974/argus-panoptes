@@ -87,3 +87,14 @@ def test_legacy_keys(tmp_path, monkeypatch):
     assert parse_refs("fixes DEMO-2, see also demo-1 and UTF-8 and OTHER-9", keys) == [Ref(43, True), Ref(41, False)]
     assert parse_refs("DEMO-2 and OP#43", keys) == [Ref(43, False)]
     assert parse_refs("DEMO-2", None) == []
+
+
+def test_stale_markdown():
+    from app.stale import stale_markdown
+
+    items = [{"id": 5, "subject": "Old thing", "status": "New", "type": "Bug", "assignee": "unassigned", "updated": "2026-01-02"},
+             {"id": 6, "subject": "Mine", "status": "In progress", "type": "Task", "assignee": "Jan", "updated": "2026-02-03"}]
+    md = stale_markdown(items, "demo", 30)
+    assert md.index("## Jan") < md.index("## unassigned")  # people first, unassigned last
+    assert "OP#5" in md and "more than 30 days: 2" in md
+    assert "Nothing is stale" in stale_markdown([], "demo", 30)

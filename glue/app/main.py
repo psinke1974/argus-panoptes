@@ -10,6 +10,7 @@ from .docs import changed_docs, doc_url, router as docs_router
 from .openproject import OpenProject
 from .refs import parse_refs
 from .release_notes import build_release_notes
+from .stale import stale_markdown
 
 log = logging.getLogger("werkplaats")
 app = FastAPI(title="Werkplaats glue")
@@ -80,3 +81,12 @@ async def release_notes(repo: str, base: str, head: str):
         r.raise_for_status()
         messages = [c["commit"]["message"] for c in r.json().get("commits", [])]
     return {"markdown": await build_release_notes(op, messages, f"{base} → {head}")}
+
+
+@app.get("/stale")
+async def stale(project: str, days: int = 30, format: str = "markdown"):
+    """Open work packages in an OpenProject project (identifier) that nobody has touched for `days` days."""
+    items = await op.stale(project, days)
+    if format == "json":
+        return {"project": project, "days": days, "items": items}
+    return {"markdown": stale_markdown(items, project, days)}

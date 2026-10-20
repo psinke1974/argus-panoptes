@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from . import config
@@ -42,3 +44,14 @@ class OpenProject:
         )
         r.raise_for_status()
         return True
+
+    async def stale(self, project: str, days: int) -> list[dict]:
+        """Open work packages in `project` (identifier) without any update for more than `days` days.
+        Comments and the glue's commit/PR notes count as updates, so git activity keeps tickets fresh."""
+        filters = [{"status": {"operator": "o", "values": None}}, {"updatedAt": {"operator": "<t-", "values": [str(days)]}}]
+        r = await self.http.get(f"/api/v3/projects/{project}/work_packages",
+                                params={"filters": json.dumps(filters), "pageSize": 200, "sortBy": json.dumps([["updatedAt", "asc"]])})
+        r.raise_for_status()
+        return [{"id": w["id"], "subject": w["subject"], "status": w["_links"]["status"]["title"],
+                 "type": w["_links"]["type"]["title"], "assignee": (w["_links"].get("assignee") or {}).get("title") or "unassigned",
+                 "updated": w["updatedAt"][:10]} for w in r.json()["_embedded"]["elements"]]
