@@ -1,0 +1,39 @@
+# Werkplaats: EU-gehoste, open-source werkplek voor projecten, git en documentatie.
+# OpenProject (werkpakketten, boards, wiki) + Gitea (git) + glue (koppeling & slimmigheden)
+services:
+  openproject:
+    image: openproject/openproject:17
+    restart: unless-stopped
+    ports: ["8080:80"]
+    environment:
+      OPENPROJECT_HOST__NAME: localhost:8080
+      OPENPROJECT_HTTPS: "false"
+      SECRET_KEY_BASE: ${OP_SECRET_KEY_BASE:?zet OP_SECRET_KEY_BASE in .env}
+      OPENPROJECT_DEFAULT__LANGUAGE: nl
+    volumes:
+      - op_pgdata:/var/openproject/pgdata
+      - op_assets:/var/openproject/assets
+
+  gitea:
+    image: gitea/gitea:1.24
+    restart: unless-stopped
+    ports: ["3000:3000", "2222:22"]
+    environment:
+      GITEA__server__ROOT_URL: http://localhost:3000/
+      GITEA__webhook__ALLOWED_HOST_LIST: "*"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__security__INSTALL_LOCK: "true"
+    volumes:
+      - gitea_data:/data
+
+  glue:
+    build: ./glue
+    restart: unless-stopped
+    ports: ["8090:8090"]
+    env_file: .env
+    depends_on: [openproject, gitea]
+
+volumes:
+  op_pgdata:
+  op_assets:
+  gitea_data:
