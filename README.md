@@ -1,6 +1,20 @@
-# Werkplaats
+# 👁 Panoptes
 
-EU-gehoste, open-source werkplek: projecten/boards, git en documentatie, aan elkaar gekoppeld.
+> *the all-seeing project tracker*
+
+Argus Panoptes, de reus met honderd ogen, sliep nooit met alle ogen tegelijk dicht. Jira heeft honderd configuratieschermen en niemand weet meer welk scherm welk oog bestuurt. Panoptes is de middenweg: open-source, EU-gehost en US-onafhankelijk, met projecten en boards, git en documentatie aan elkaar gekoppeld. Géén labyrint van workflow-schema's, permission schemes en screen schemes (het Labyrint van Knossos had minder bochten, en Theseus had in elk geval een draad).
+
+Gebouwd op [OpenProject](https://www.openproject.org) (GPLv3) en [Gitea](https://about.gitea.com) (MIT), met eigen lijm en een Atlassian-importer. Voor wie Atlassian wil ontvluchten zonder de onderwereld in te hoeven: de importer is jullie Charon.
+
+| Mythe | In Panoptes |
+|---|---|
+| Argus' honderd ogen | `glue/`: ziet elke commit en PR, en werkt de tickets bij |
+| De draad van Ariadne | `OP#123` en oude `PROJ-12`-sleutels leiden door git terug naar het ticket |
+| Charon, de veerman | `werkplaats_import/`: brengt Jira en Confluence naar de overkant |
+| De Augiasstallen | Jira's workflow-schema's, field configurations en screen schemes |
+| Sisyphus | Een backlog in Jira die nooit leeg raakt (hier ook niet, maar het rolt lichter) |
+
+*(De map en dockerprojectnaam heten voorlopig nog `werkplaats`.)*
 
 | Onderdeel | Basis | Licentie | URL (lokaal) |
 |---|---|---|---|
