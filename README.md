@@ -116,20 +116,34 @@ python3 deploy/tenantctl.py enable-sso acme --admin-email admin@acme.com
 Adds a bundled [Keycloak](https://www.keycloak.org) at `auth.acme.<base>` (realm `panoptes`, one client per app, a first administrator whose temporary password is in the tenant `.env`).
 - **Git:** "Sign in with keycloak"; accounts are created on first sign-in (password sign-up stays disabled).
 - **Docs portal:** real OIDC sign-in replaces the basic-auth password. Repository access is checked *as the signed-in user* through Gitea (`Sudo`), so people only see docs of repositories they may read. The stale-ticket report is limited to users with the Keycloak realm role `admin`. New SSO users must sign in to Git once before the portal can see their repositories.
-- **OpenProject: not covered.** OpenProject's Community Edition has no OIDC/SAML login (it is an Enterprise feature, the container logs say so). OpenProject keeps its own logins. The OIDC provider is already configured, so it should start working once an Enterprise token is added, but that part is **untested**. A possible community-edition route is LDAP (OpenProject supports it); contributions welcome.
+- **OpenProject:** its Community Edition has no OIDC/SAML login (an Enterprise feature; the container logs say so), so it cannot join the Keycloak session. It gets the *same accounts* through the shared directory below. (The OIDC provider is also pre-configured and should start working once an Enterprise token is added; that part is untested.)
 - Uses Keycloak's embedded database (fine for small tenants; back it up with `tenantctl backup`, it is included). Containers reach `auth.<host>` through the host's Caddy, with the proxy's CA added to their trust bundle for the local trial.
 - Verified by `python scripts/sso_smoke.py acme`: real sign-ins to Git and the docs portal, per-user repository access (a private repo stays hidden), admin-only report, single sign-on across apps, sign-out.
+
+### Shared accounts: one directory for OpenProject, Git and docs
+```bash
+python3 deploy/tenantctl.py enable-ldap acme --admin-email admin@acme.com    # after enable-sso
+python3 deploy/tenantctl.py ldap-user acme --username jan --email jan.jansen@acme.com [--admin]
+```
+Adds a small LDAP directory ([lldap](https://github.com/lldap/lldap), web UI at `users.acme.<base>`) as the single place where people and passwords live:
+- **OpenProject** gets it as a login source (a Community Edition feature); the account is created on first sign-in with name and e-mail from the directory.
+- **Git and the docs portal** use the same accounts through Keycloak's LDAP federation. The directory group `admin` becomes the Keycloak role `admin` (admin-only reports).
+- First user: `owner` (override with `--admin-user`), password in the tenant `.env`. First and last name are required by OpenProject; they are derived from the e-mail address (`jan.jansen@x` becomes Jan Jansen) unless you pass `--first-name/--last-name`.
+- **Not single sign-on for OpenProject:** you sign in there with the same password, but it is a separate session (Community Edition limitation). OpenProject administrators are still granted inside OpenProject.
+- The local break-glass accounts (OpenProject `admin`, Git `panoptes`, Keycloak `admin`/`kcadmin`) keep working. To avoid duplicate-e-mail clashes they use plus-addresses (`you+op@…`, `you+git@…`, `you+kc@…`, the same mailbox) once the directory owns your real address. Git no longer links an SSO login to an existing account by e-mail alone.
+- Included in `tenantctl backup/restore`. Verified by `python scripts/ldap_smoke.py acme`: real logins to OpenProject (LDAP), Git and docs with one account, wrong-password rejection, group-to-role mapping.
 
 ## End-to-end tests
 - `python scripts/e2e.py`: dev stack; creates a project, work package and repo and tests the whole chain.
 - `python scripts/sso_smoke.py acme`: after `enable-sso`; drives real Keycloak sign-ins.
+- `python scripts/ldap_smoke.py acme`: after `enable-ldap`; one directory account across OpenProject, Git and docs.
 - `python scripts/digest_smoke.py acme`: configures the digest against a local receiver and checks what is delivered.
 - `python scripts/tenant_smoke.py acme`: tenant stack; routing, docs-portal protection, webhook isolation, stale report and the git-to-ticket chain via an old Jira key.
 
 ## Roadmap
 - Digest: per-assignee e-mails and Microsoft Teams format.
 - EU-hosted LLM (e.g. Mistral): work package summaries and draft docs from closed tickets.
-- SSO for OpenProject itself (needs Enterprise edition, or an LDAP route), scheduled offsite backups, billing.
+- True single sign-on for OpenProject (needs the Enterprise edition), scheduled off-site backups, billing.
 - Test the importers against real Jira/Confluence exports.
 
 ## Tests

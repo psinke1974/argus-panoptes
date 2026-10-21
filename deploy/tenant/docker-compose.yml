@@ -37,7 +37,7 @@ services:
       GITEA__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
       GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"
       GITEA__oauth2_client__USERNAME: preferred_username
-      GITEA__oauth2_client__ACCOUNT_LINKING: auto
+      GITEA__oauth2_client__ACCOUNT_LINKING: login   # an SSO login never takes over an existing account by e-mail alone
       GITEA__security__INSTALL_LOCK: "true"
       SSL_CERT_FILE: /etc/panoptes/ca-bundle.crt
     volumes:
@@ -113,6 +113,25 @@ services:
       internal:
       proxy: {aliases: ["${TENANT}-kc"]}
 
+  # Optional shared user directory: started only with `--profile ldap` (tenantctl enable-ldap).
+  # One account for OpenProject (LDAP login), and for Git + docs through Keycloak's LDAP federation.
+  lldap:
+    profiles: ["ldap"]
+    image: lldap/lldap:v0.6.2
+    restart: unless-stopped
+    environment:
+      LLDAP_JWT_SECRET: ${LDAP_JWT_SECRET:-unused}
+      LLDAP_KEY_SEED: ${LDAP_KEY_SEED:-unused-unused-unused-unused-0000}
+      LLDAP_LDAP_BASE_DN: dc=panoptes,dc=local
+      LLDAP_LDAP_USER_DN: lldapadmin
+      LLDAP_LDAP_USER_PASS: ${LDAP_ADMIN_PASSWORD:-unused-unused}
+      LLDAP_HTTP_URL: https://users.${OP_HOST}
+    volumes:
+      - lldap_data:/data
+    networks:
+      internal:
+      proxy: {aliases: ["${TENANT}-ldap"]}
+
 networks:
   internal:
   proxy:
@@ -124,3 +143,4 @@ volumes:
   gitea_data:
   kc_data:
   glue_state:
+  lldap_data:

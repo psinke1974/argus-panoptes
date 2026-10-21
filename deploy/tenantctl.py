@@ -3,6 +3,8 @@
 
   tenantctl.py create acme [--base-domain panoptes.example.com] [--admin-email admin@acme.com]
   tenantctl.py enable-sso acme [--admin-email admin@acme.com]   (bundled Keycloak: sign in once for OpenProject, Git and docs)
+  tenantctl.py enable-ldap acme [--admin-user owner] [--admin-email ...]   (one account for OpenProject, Git and docs)
+  tenantctl.py ldap-user acme --username jan --email jan@acme.com [--admin]
   tenantctl.py digest acme --projects proj1,proj2 --webhook-url https://hooks.slack.com/...   (weekly stale-ticket digest)
   tenantctl.py list
   tenantctl.py backup acme [--out backups]      (consistent: the stack is stopped for ~1 min)
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -66,7 +69,8 @@ def tenant_env(tenant: str) -> dict:
 
 
 def compose(tenant: str, *args, **kw) -> str:
-    profile = ["--profile", "sso"] if tenant_env(tenant).get("SSO_ENABLED") == "1" else []
+    e = tenant_env(tenant)
+    profile = [x for flag, name in (("SSO_ENABLED", "sso"), ("LDAP_ENABLED", "ldap")) if e.get(flag) == "1" for x in ("--profile", name)]
     return sh("docker", "compose", "-f", str(TENANT_COMPOSE), "--env-file", str(TENANTS / tenant / ".env"), *profile, *args, **kw)
 
 
@@ -100,7 +104,7 @@ def wait_ready(url: str, host_hint: str, timeout: int = 420) -> None:
     sys.exit(f"{host_hint} did not become ready within {timeout}s (check: docker compose logs)")
 
 
-def caddy_snippet(tenant: str, host: str, docs_hash: str, sso: bool = False) -> str:
+def caddy_snippet(tenant: str, host: str, docs_hash: str, sso: bool = False, ldap: bool = False) -> str:
     local = host.endswith(".localhost") or host == "localhost"
     tls = "\ttls internal\n" if local else ""
     docs_auth = "\t# SSO: the glue itself requires a Keycloak sign-in and checks repository access per user\n" if sso else f"""\t# the docs portal reads every repo with the service token, so it must not be public.
@@ -114,6 +118,11 @@ auth.{host} {{
 {tls}\treverse_proxy {tenant}-kc:8080
 }}
 """ if sso else ""
+    users_site = f"""
+users.{host} {{
+{tls}\treverse_proxy {tenant}-ldap:17170
+}}
+""" if ldap else ""
     return f"""# Panoptes tenant {tenant}
 {host} {{
 {tls}\treverse_proxy {tenant}-op:80
@@ -129,7 +138,7 @@ docs.{host} {{
 \trespond @hooks 404
 {docs_auth}\treverse_proxy {tenant}-glue:8090
 }}
-{auth_site}"""
+{auth_site}{users_site}"""
 
 
 def reload_proxy() -> None:
@@ -173,7 +182,7 @@ def create(a) -> None:
 
     print("• bootstrapping Gitea and OpenProject")
     sh("docker", "compose", "-f", str(TENANT_COMPOSE), "--env-file", str(env), "exec", "-T", "-u", "git", "gitea", "gitea", "admin", "user", "create",
-       "--admin", "--username", "panoptes", "--password", gitea_pw, "--email", a.admin_email, "--must-change-password=false")
+       "--admin", "--username", "panoptes", "--password", gitea_pw, "--email", plus_address(a.admin_email, "git"), "--must-change-password=false")
     token = compose(t, "exec", "-T", "-u", "git", "gitea", "gitea", "admin", "user", "generate-access-token", "--username", "panoptes", "--token-name", "glue", "--scopes", "all", "--raw").splitlines()[-1]
     set_env(env, "GITEA_TOKEN", token)
     # pipe the script through a temp file inside the container (rails runner does not read stdin)
@@ -181,7 +190,7 @@ def create(a) -> None:
     local_rb.write_text(OP_BOOTSTRAP)
     compose(t, "cp", str(local_rb), "openproject:/tmp/bootstrap.rb")
     local_rb.unlink()
-    out = compose(t, "exec", "-T", "-e", f"NEWPW={op_pw}", "-e", f"ADMIN_MAIL={a.admin_email}", "openproject", "bash", "-c",
+    out = compose(t, "exec", "-T", "-e", f"NEWPW={op_pw}", "-e", f"ADMIN_MAIL={plus_address(a.admin_email, 'op')}", "openproject", "bash", "-c",
                   "cd /app && RAILS_ENV=production bundle exec rails runner /tmp/bootstrap.rb && rm /tmp/bootstrap.rb")
     key = re.search(r"APIKEY=(\S+)", out)
     if not key:
@@ -220,6 +229,23 @@ def realm_json(host: str, secrets_: dict, admin_email: str, admin_pw: str) -> di
                    "realmRoles": ["admin"], "credentials": [{"type": "password", "value": admin_pw, "temporary": True}]}],
     }
 
+
+LDAP_BASE_DN = "dc=panoptes,dc=local"
+LDAP_PEOPLE = f"ou=people,{LDAP_BASE_DN}"
+LDAP_GROUPS = f"ou=groups,{LDAP_BASE_DN}"
+LDAP_BIND_USER = "panoptes-bind"
+
+OP_LDAP = """
+src = LdapAuthSource.find_or_initialize_by(name: 'Panoptes directory')
+src.assign_attributes(
+  host: 'lldap', port: 3890, tls_mode: 'plain_ldap',
+  account: ENV['BIND_DN'], account_password: ENV['BIND_PW'], base_dn: ENV['PEOPLE_DN'],
+  attr_login: 'uid', attr_firstname: 'givenName', attr_lastname: 'sn', attr_mail: 'mail',
+  onthefly_register: true, filter_string: nil
+)
+src.save!
+puts 'OPLDAP=ok'
+"""
 
 OP_SSO = """
 iss = ENV['ISSUER']
@@ -268,7 +294,7 @@ def enable_sso(a) -> None:
 
     print("• routing auth.<host> and switching the docs portal from basic auth to SSO")
     route = PROXY_DIR / "tenants" / f"{t}.caddy"
-    route.write_text(caddy_snippet(t, host, "", sso=True))
+    route.write_text(caddy_snippet(t, host, "", sso=True, ldap=e.get("LDAP_ENABLED") == "1"))
     reload_proxy()
     ensure_ca_bundle(tdir, local)
 
@@ -320,6 +346,7 @@ def digest(a) -> None:
         for k in keys:
             set_env(env, k, "")
         compose(t, "up", "-d", "--build", "glue")
+        wait_ready(f"https://docs.{tenant_env(t)['OP_HOST']}/health", "the glue", timeout=90)
         print("weekly digest switched off")
         return
     if not a.projects or not (a.webhook_url or (a.smtp_host and a.to)):
@@ -331,8 +358,231 @@ def digest(a) -> None:
     for k, v in values.items():
         set_env(env, k, v)
     compose(t, "up", "-d", "--build", "glue")
+    wait_ready(f"https://docs.{tenant_env(t)['OP_HOST']}/health", "the glue", timeout=90)
     print(f"weekly digest configured for {t}: every {a.weekday} from {a.hour}:00 ({a.tz}), projects {a.projects}, stale after {a.days} days.")
     print("Try it now: POST https://docs.<host>/digest/send (administrators), preview with GET /digest/preview.")
+
+
+def plus_address(email: str, tag: str) -> str:
+    """info@x.nl -> info+git@x.nl: same mailbox, unique address (local break-glass accounts must not share the owner's e-mail)."""
+    local, _, domain = email.partition("@")
+    return f"{local.split('+')[0]}+{tag}@{domain}" if domain else email
+
+
+def derive_names(username: str, email: str, first: str | None, last: str | None) -> tuple[str, str]:
+    """OpenProject requires first and last name; derive them from 'jan.jansen@x' when not given."""
+    if first and last:
+        return first, last
+    parts = [p for p in re.split(r"[._-]+", email.split("@")[0].split("+")[0]) if p]
+    f = first or (parts[0].capitalize() if parts else username)
+    l = last or (" ".join(p.capitalize() for p in parts[1:]) if len(parts) > 1 else "User")
+    return f, l
+
+
+def https_json(url: str, method: str = "GET", token: str | None = None, body=None):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    headers = {"Authorization": f"token {token}"} if token else {}
+    data = json.dumps(body).encode() if body is not None else None
+    if data:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else {}
+
+
+def deconflict_admin_emails(t: str, owner_email: str) -> None:
+    """The directory user owns the real address; give the local break-glass accounts (OpenProject admin, Git admin,
+    Keycloak admin) a plus-address if they still use it, so no account creation or e-mail based linking collides."""
+    e = tenant_env(t)
+    host = e["OP_HOST"]
+    rb = TENANTS / t / "emails.rb"
+    rb.write_text("User.where(login: 'admin', mail: ENV['OLD']).update_all(mail: ENV['NEW'])\nputs 'EMAILS=ok'\n")
+    compose(t, "cp", str(rb), "openproject:/tmp/emails.rb")
+    rb.unlink()
+    compose(t, "exec", "-T", "-e", f"OLD={owner_email}", "-e", f"NEW={plus_address(owner_email, 'op')}", "openproject", "bash", "-c",
+            "cd /app && RAILS_ENV=production bundle exec rails runner /tmp/emails.rb && rm /tmp/emails.rb")
+    gitea = f"https://git.{host}/api/v1"
+    me = https_json(f"{gitea}/users/panoptes", token=e["GITEA_TOKEN"])
+    if (me.get("email") or "").lower() == owner_email.lower():
+        https_json(f"{gitea}/admin/users/panoptes", "PATCH", e["GITEA_TOKEN"], {"email": plus_address(owner_email, "git"), "login_name": "panoptes", "source_id": 0})
+    if e.get("SSO_ENABLED") == "1":
+        tok = kc_api(host, "POST", "/realms/master/protocol/openid-connect/token",
+                     form={"grant_type": "password", "client_id": "admin-cli", "username": "kcadmin", "password": e["KC_ADMIN_PASSWORD"]})["access_token"]
+        for u in kc_api(host, "GET", "/admin/realms/panoptes/users?username=admin&exact=true", tok):
+            if (u.get("email") or "").lower() == owner_email.lower():
+                kc_api(host, "PUT", f"/admin/realms/panoptes/users/{u['id']}", tok, {**u, "email": plus_address(owner_email, "kc")})
+
+
+def write_route(t: str) -> None:
+    """(Re)write the tenant's Caddy routes from its current settings."""
+    e = tenant_env(t)
+    docs_hash = sh("docker", "run", "--rm", "caddy:2", "caddy", "hash-password", "--plaintext", e["DOCS_PASSWORD"])
+    (PROXY_DIR / "tenants" / f"{t}.caddy").write_text(caddy_snippet(t, e["OP_HOST"], docs_hash, sso=e.get("SSO_ENABLED") == "1", ldap=e.get("LDAP_ENABLED") == "1"))
+    reload_proxy()
+
+
+def lldap_exec(t: str, *args, input=None) -> str:
+    return compose(t, "exec", "-T", "lldap", *args, input=input)
+
+
+def lldap_token(t: str, admin_pw: str) -> str:
+    out = lldap_exec(t, "curl", "-s", "-X", "POST", "http://localhost:17170/auth/simple/login", "-H", "Content-Type: application/json",
+                     "--data-binary", "@-", input=json.dumps({"username": "lldapadmin", "password": admin_pw}))
+    return json.loads(out)["token"]
+
+
+def lldap_graphql(t: str, token: str, query: str) -> dict:
+    out = lldap_exec(t, "curl", "-s", "-X", "POST", "http://localhost:17170/api/graphql", "-H", "Content-Type: application/json",
+                     "-H", f"Authorization: Bearer {token}", "--data-binary", "@-", input=json.dumps({"query": query}))
+    data = json.loads(out)
+    if data.get("errors"):
+        raise RuntimeError(data["errors"][0]["message"])
+    return data["data"]
+
+
+def lldap_add_user(t: str, username: str, email: str, password: str, groups: tuple = (), display: str = "", first: str | None = None, last: str | None = None) -> None:
+    """Create (or update the password of) a directory user and put it in the given groups (created when missing)."""
+    admin_pw = tenant_env(t)["LDAP_ADMIN_PASSWORD"]
+    token = lldap_token(t, admin_pw)
+    q = lambda query: lldap_graphql(t, token, query)
+    if username not in [u["id"] for u in q("query { users { id } }")["users"]]:
+        f, l = derive_names(username, email, first, last)
+        q('mutation { createUser(user: {id: %s, email: %s, displayName: %s, firstName: %s, lastName: %s}) { id } }'
+          % (json.dumps(username), json.dumps(email), json.dumps(display or f"{f} {l}"), json.dumps(f), json.dumps(l)))
+    lldap_exec(t, "/app/lldap_set_password", "--base-url", "http://localhost:17170", "--admin-username", "lldapadmin", "--admin-password", admin_pw,
+               "--username", username, "--password", password)
+    existing = {g["displayName"]: g["id"] for g in q("query { groups { id displayName } }")["groups"]}
+    for g in groups:
+        if g not in existing:
+            existing[g] = q("mutation { createGroup(name: %s) { id } }" % json.dumps(g))["createGroup"]["id"]
+        try:
+            q("mutation { addUserToGroup(userId: %s, groupId: %d) { ok } }" % (json.dumps(username), existing[g]))
+        except RuntimeError as err:
+            if "already" not in str(err).lower() and "duplicate" not in str(err).lower() and "unique" not in str(err).lower():
+                raise
+
+
+def kc_api(host: str, method: str, path: str, token: str | None = None, body=None, form=None):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    data, headers = None, {}
+    if form is not None:
+        data, headers["Content-Type"] = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
+    elif body is not None:
+        data, headers["Content-Type"] = json.dumps(body).encode(), "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"https://auth.{host}{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as err:
+        sys.exit(f"Keycloak {method} {path} failed: {err.code} {err.read().decode()[:300]}")
+
+
+def keycloak_federate_ldap(t: str) -> None:
+    """Point the Keycloak realm at the directory: users sign in with their directory password; directory group 'admin' becomes realm role 'admin'."""
+    e = tenant_env(t)
+    host = e["OP_HOST"]
+    tok = kc_api(host, "POST", "/realms/master/protocol/openid-connect/token",
+                 form={"grant_type": "password", "client_id": "admin-cli", "username": "kcadmin", "password": e["KC_ADMIN_PASSWORD"]})["access_token"]
+    realm_id = kc_api(host, "GET", "/admin/realms/panoptes", tok)["id"]
+    for c in kc_api(host, "GET", f"/admin/realms/panoptes/components?type=org.keycloak.storage.UserStorageProvider&name=panoptes-ldap", tok):
+        kc_api(host, "DELETE", f"/admin/realms/panoptes/components/{c['id']}", tok)
+    one = lambda **kw: {k: [str(v)] for k, v in kw.items()}
+    provider = {"name": "panoptes-ldap", "providerId": "ldap", "providerType": "org.keycloak.storage.UserStorageProvider", "parentId": realm_id,
+                "config": one(vendor="other", connectionUrl="ldap://lldap:3890", authType="simple", bindDn=f"uid={LDAP_BIND_USER},{LDAP_PEOPLE}",
+                              bindCredential=e["LDAP_BIND_PASSWORD"], usersDn=LDAP_PEOPLE, usernameLDAPAttribute="uid", rdnLDAPAttribute="uid",
+                              uuidLDAPAttribute="uid", userObjectClasses="person", editMode="READ_ONLY", importEnabled="true", syncRegistrations="false",
+                              searchScope="1", pagination="false", enabled="true", priority="1", cachePolicy="DEFAULT", fullSyncPeriod="-1",
+                              changedSyncPeriod="-1", validatePasswordPolicy="false", trustEmail="true", connectionPooling="true")}
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    req = urllib.request.Request(f"https://auth.{host}/admin/realms/panoptes/components", data=json.dumps(provider).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+        comp_id = r.headers["Location"].rsplit("/", 1)[1]
+    mapper = {"name": "directory-groups-to-roles", "providerId": "role-ldap-mapper", "providerType": "org.keycloak.storage.ldap.mappers.LDAPStorageMapper", "parentId": comp_id,
+              "config": one(mode="READ_ONLY", **{"membership.attribute.type": "DN", "user.roles.retrieve.strategy": "LOAD_ROLES_BY_MEMBER_ATTRIBUTE",
+                            "roles.dn": LDAP_GROUPS, "membership.ldap.attribute": "uniqueMember", "membership.user.ldap.attribute": "uid",
+                            "role.name.ldap.attribute": "cn", "role.object.classes": "groupOfUniqueNames", "use.realm.roles.mapping": "true"})}
+    kc_api(host, "POST", "/admin/realms/panoptes/components", tok, mapper)
+
+
+def enable_ldap(a) -> None:
+    """Add a bundled LDAP directory (lldap): one account for OpenProject, Git and the docs portal."""
+    t = a.name
+    tdir = TENANTS / t
+    env = tdir / ".env"
+    if not env.exists():
+        sys.exit(f"unknown tenant {t}")
+    e = read_env(env)
+    host = e["OP_HOST"]
+    if e.get("LDAP_ENABLED") == "1":
+        sys.exit("the directory is already enabled for this tenant")
+    admin_email = a.admin_email or e.get("ADMIN_EMAIL", "admin@example.com")
+    first_pw = secrets.token_urlsafe(12)
+    for k, v in {"LDAP_ENABLED": "1", "LDAP_JWT_SECRET": secrets.token_hex(32), "LDAP_KEY_SEED": secrets.token_hex(32),
+                 "LDAP_ADMIN_PASSWORD": secrets.token_urlsafe(18), "LDAP_BIND_PASSWORD": secrets.token_urlsafe(18),
+                 "LDAP_FIRST_USER": a.admin_user, "LDAP_FIRST_PASSWORD": first_pw}.items():
+        if v or k not in e:
+            set_env(env, k, v)
+    e = read_env(env)
+
+    print("• routing users.<host> (directory web UI)")
+    write_route(t)
+    print("• starting the directory")
+    compose(t, "up", "-d")
+    for _ in range(40):
+        try:
+            lldap_token(t, e["LDAP_ADMIN_PASSWORD"])
+            break
+        except (SystemExit, json.JSONDecodeError, KeyError):
+            time.sleep(3)
+    else:
+        sys.exit("the directory did not start (docker compose logs lldap)")
+
+    print("• creating the read-only service account and the first user")
+    lldap_add_user(t, LDAP_BIND_USER, f"{LDAP_BIND_USER}@panoptes.local", e["LDAP_BIND_PASSWORD"], ("lldap_strict_readonly",), "Panoptes service account", "Panoptes", "Service")
+    deconflict_admin_emails(t, admin_email)
+    lldap_add_user(t, a.admin_user, admin_email, first_pw, ("admin",), first=a.first_name, last=a.last_name)
+
+    print("• configuring OpenProject (LDAP login source, accounts are created on first sign-in)")
+    rb = tdir / "ldap.rb"
+    rb.write_text(OP_LDAP)
+    compose(t, "cp", str(rb), "openproject:/tmp/ldap.rb")
+    rb.unlink()
+    out = compose(t, "exec", "-T", "-e", f"BIND_DN=uid={LDAP_BIND_USER},{LDAP_PEOPLE}", "-e", f"BIND_PW={e['LDAP_BIND_PASSWORD']}", "-e", f"PEOPLE_DN={LDAP_PEOPLE}",
+                  "openproject", "bash", "-c", "cd /app && RAILS_ENV=production bundle exec rails runner /tmp/ldap.rb && rm /tmp/ldap.rb")
+    if "OPLDAP=ok" not in out:
+        sys.exit("OpenProject LDAP configuration failed:\n" + out[-600:])
+
+    sso = e.get("SSO_ENABLED") == "1"
+    if sso:
+        print("• federating Keycloak with the directory (Git and docs sign-ins)")
+        keycloak_federate_ldap(t)
+
+    print(f"""
+Directory enabled for '{t}'.
+  User management    https://users.{host}   (log in as lldapadmin; password LDAP_ADMIN_PASSWORD in {env})
+  First user         {a.admin_user} / LDAP_FIRST_PASSWORD in {env} (member of the group 'admin'; change the password in the directory UI)
+  OpenProject        log in at https://{host} with a directory account; the account is created on first sign-in (not an OpenProject admin: grant that in OpenProject)
+  Git and docs       {"same accounts through Keycloak; group 'admin' becomes the realm role 'admin'" if sso else "run 'tenantctl enable-sso' to give Git and the docs portal the same accounts"}
+  Add people         tenantctl.py ldap-user {t} --username jan --email jan@example.com
+""")
+
+
+def ldap_user(a) -> None:
+    t = a.name
+    e = tenant_env(t)
+    if e.get("LDAP_ENABLED") != "1":
+        sys.exit("enable the directory first: tenantctl enable-ldap " + t)
+    pw = a.password or secrets.token_urlsafe(12)
+    lldap_add_user(t, a.username, a.email, pw, ("admin",) if a.admin else (), first=a.first_name, last=a.last_name)
+    print(f"user {a.username} ready" + ("" if a.password else f"; initial password: {pw}") + (" (member of group 'admin')" if a.admin else ""))
 
 
 def list_tenants(_) -> None:
@@ -347,7 +597,8 @@ def list_tenants(_) -> None:
 
 
 def volumes_for(t: str) -> tuple:
-    return ("op_pgdata", "op_assets", "gitea_data") + (("kc_data",) if tenant_env(t).get("SSO_ENABLED") == "1" else ())
+    e = tenant_env(t)
+    return ("op_pgdata", "op_assets", "gitea_data") + (("kc_data",) if e.get("SSO_ENABLED") == "1" else ()) + (("lldap_data",) if e.get("LDAP_ENABLED") == "1" else ())
 
 
 def volume(t: str, name: str) -> str:
@@ -472,6 +723,22 @@ def main() -> None:
     sso.add_argument("--admin-email")
     sso.add_argument("--rotate", action="store_true")
     sso.set_defaults(fn=enable_sso)
+    ld = sub.add_parser("enable-ldap")
+    ld.add_argument("name")
+    ld.add_argument("--admin-user", default="owner", help="first directory user (not 'admin' or 'panoptes': those are local break-glass accounts)")
+    ld.add_argument("--admin-email")
+    ld.add_argument("--first-name")
+    ld.add_argument("--last-name")
+    ld.set_defaults(fn=enable_ldap)
+    lu = sub.add_parser("ldap-user")
+    lu.add_argument("name")
+    lu.add_argument("--username", required=True)
+    lu.add_argument("--email", required=True)
+    lu.add_argument("--first-name", help="default: derived from the e-mail address (jan.jansen@x -> Jan Jansen)")
+    lu.add_argument("--last-name")
+    lu.add_argument("--password", help="default: generated and printed")
+    lu.add_argument("--admin", action="store_true", help="add to the directory group 'admin' (Keycloak role 'admin')")
+    lu.set_defaults(fn=ldap_user)
     sub.add_parser("list").set_defaults(fn=list_tenants)
     b = sub.add_parser("backup")
     b.add_argument("name")
