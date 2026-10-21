@@ -4,7 +4,7 @@ Thanks for looking! Panoptes is early, so almost any contribution helps. All cod
 
 ## Most useful right now
 1. **Real-world import reports.** Run the importer against your (ideally anonymised or test) Jira/Confluence data and open an issue with what broke. Please include the command, the report the importer printed and, if you can, a minimal export that reproduces it. Never post real customer data or tokens.
-2. **Integrations:** SSO (Keycloak/Authentik), other git hosts (GitLab, Forgejo), notifications (Slack/Teams/e-mail), a weekly stale-ticket digest.
+2. **Integrations:** SSO (Keycloak/Authentik), other git hosts (GitLab, Forgejo), notifications (Slack/Teams/e-mail), per-assignee or Teams-format digests.
 3. **Docs and translations.**
 
 ## Development setup
@@ -17,9 +17,9 @@ python -m pytest tests_import
 The end-to-end scripts need Docker: see the README ("Try it in about 5 minutes", then `python scripts/tenant_smoke.py demo`).
 
 ## Layout
-- `glue/`: FastAPI service between Gitea and OpenProject (webhooks, release notes, stale report, docs portal).
+- `glue/`: FastAPI service between Gitea and OpenProject (webhooks, release notes, stale report and weekly digest, docs portal, OIDC sign-in).
 - `panoptes_import/`: Jira and Confluence importers (CSV/HTML export and REST API).
-- `deploy/`: Caddy proxy, per-tenant compose file, `tenantctl.py` (create/list/backup/restore/destroy).
+- `deploy/`: Caddy proxy, per-tenant compose file, `tenantctl.py` (create/list/enable-sso/digest/backup/restore/destroy).
 - `tests_import/mock_atlassian.py`: a fake Jira/Confluence API that mimics the real response shapes.
 
 ## Pull requests

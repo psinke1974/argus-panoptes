@@ -12,3 +12,27 @@ OP_HOST_HEADER = os.getenv("OP_HOST_HEADER", "localhost:8080")  # must equal OPE
 PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8090")  # base URL of this service, used for links in OpenProject
 OP_PUBLIC_URL = os.getenv("OP_PUBLIC_URL", "http://localhost:8080")
 LEGACY_KEYS_DIR = os.getenv("LEGACY_KEYS_DIR", "/data/import-state")  # directory with the importer's jira-*.json files
+
+# Optional single sign-on (OpenID Connect). Active when OIDC_ISSUER is set; tenantctl enable-sso sets all of these.
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")  # public issuer URL, e.g. https://auth.acme.example.com/realms/panoptes
+OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "panoptes-docs")
+OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+OIDC_ADMIN_ROLE = os.getenv("OIDC_ADMIN_ROLE", "admin")  # realm role allowed to use /stale
+
+# Weekly stale-ticket digest (off unless DIGEST_PROJECTS and a delivery channel are set)
+DIGEST_PROJECTS = [p.strip() for p in os.getenv("DIGEST_PROJECTS", "").split(",") if p.strip()]  # OpenProject project identifiers
+DIGEST_DAYS = int(os.getenv("DIGEST_DAYS", "30"))
+DIGEST_WEEKDAY = int(os.getenv("DIGEST_WEEKDAY", "0"))  # 0 = Monday
+DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))
+DIGEST_TZ = os.getenv("DIGEST_TZ", "UTC")
+DIGEST_WEBHOOK_URL = os.getenv("DIGEST_WEBHOOK_URL", "")  # Slack-compatible incoming webhook ({"text": ...})
+DIGEST_WEBHOOK_FORMAT = os.getenv("DIGEST_WEBHOOK_FORMAT", "slack")  # slack | markdown (Mattermost, Rocket.Chat)
+DIGEST_SMTP_HOST = os.getenv("DIGEST_SMTP_HOST", "")
+DIGEST_SMTP_PORT = int(os.getenv("DIGEST_SMTP_PORT", "587"))
+DIGEST_SMTP_USER = os.getenv("DIGEST_SMTP_USER", "")
+DIGEST_SMTP_PASSWORD = os.getenv("DIGEST_SMTP_PASSWORD", "")
+DIGEST_SMTP_STARTTLS = os.getenv("DIGEST_SMTP_STARTTLS", "true").lower() != "false"
+DIGEST_MAIL_FROM = os.getenv("DIGEST_MAIL_FROM", "")
+DIGEST_MAIL_TO = [a.strip() for a in os.getenv("DIGEST_MAIL_TO", "").split(",") if a.strip()]
+DIGEST_STATE_FILE = os.getenv("DIGEST_STATE_FILE", "/data/state/digest.json")

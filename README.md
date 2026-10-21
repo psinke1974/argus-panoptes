@@ -64,6 +64,7 @@ docker compose up -d --build
 - PR opened: status moves to *In progress*. `fixes OP#123` + merge (or a push to the default branch): status moves to *Closed*.
 - `GET /release-notes?repo=owner/name&base=v1&head=v2`: Markdown release notes grouped by work package type.
 - `GET /stale?project=<identifier>&days=30` (`&format=json` for machines): open work packages nobody has touched for N days, grouped by assignee. Commits and PR notes from the glue count as activity, so git work keeps tickets fresh.
+- **Weekly stale-ticket digest:** every Monday (configurable) the glue posts the stale report to a Slack-compatible webhook (Slack, Mattermost, Rocket.Chat) and/or e-mails it. Configure per tenant: `python3 deploy/tenantctl.py digest acme --projects proj1,proj2 --webhook-url https://hooks.slack.com/... --tz Europe/Amsterdam` (or `--smtp-host ... --to a@x.com,b@x.com`; `--off` to disable). Preview with `GET /digest/preview`, send now with `POST /digest/send` (administrators). It sends once per day at most, also across restarts.
 - Docs-in-repo: Markdown in `docs/` (and the repo root) is served at `http://localhost:8090/docs/<owner>/<repo>` with navigation, search and a list of related work packages (from the commits that touched the file). A commit with `OP#123` that changes docs adds a link to that page on the work package.
   - Deliberate choice: the OpenProject API can only read wiki pages, not write them. Git is therefore the source of truth and the glue provides the reading portal.
 
@@ -105,18 +106,30 @@ python3 deploy/tenantctl.py destroy acme --yes                               # r
 - Creates `acme.<base>` (OpenProject), `git.acme.<base>` (Gitea, HTTPS clone only) and `docs.acme.<base>` (docs portal), generates all secrets in `tenants/acme/.env` (chmod 600) and bootstraps the admin accounts and API tokens.
 - Production needs wildcard DNS (`*.panoptes.example.com`) pointing at the server; Caddy then obtains Let's Encrypt certificates. Locally, `*.localhost` uses Caddy's internal CA (accept the browser warning, or run `caddy trust` inside the Caddy container's CA).
 - Rough sizing: about 2 GB RAM per tenant for OpenProject, plus a little for Gitea and the glue.
-- **Known limitation:** the docs portal reads all repositories with the service token, so it is protected with HTTP basic auth (`docs` / `DOCS_PASSWORD` in the tenant `.env`) until proper SSO exists. Webhooks are not reachable from outside.
-- Backups contain all tenant data **and secrets**: store them encrypted and off the server. Restore is tested (destroy, restore, smoke test).
-- Not built yet: scheduled/encrypted offsite backups, SSO (Keycloak/Authentik), billing.
+- Without SSO the docs portal is protected with HTTP basic auth (`docs` / `DOCS_PASSWORD` in the tenant `.env`), because it reads all repositories with the service token. Webhooks are never reachable from outside. With SSO enabled (below) access is checked per user.
+- Not built yet: scheduled/encrypted offsite backups, billing.
+
+### Single sign-on (Keycloak)
+```bash
+python3 deploy/tenantctl.py enable-sso acme --admin-email admin@acme.com
+```
+Adds a bundled [Keycloak](https://www.keycloak.org) at `auth.acme.<base>` (realm `panoptes`, one client per app, a first administrator whose temporary password is in the tenant `.env`).
+- **Git:** "Sign in with keycloak"; accounts are created on first sign-in (password sign-up stays disabled).
+- **Docs portal:** real OIDC sign-in replaces the basic-auth password. Repository access is checked *as the signed-in user* through Gitea (`Sudo`), so people only see docs of repositories they may read. The stale-ticket report is limited to users with the Keycloak realm role `admin`. New SSO users must sign in to Git once before the portal can see their repositories.
+- **OpenProject: not covered.** OpenProject's Community Edition has no OIDC/SAML login (it is an Enterprise feature, the container logs say so). OpenProject keeps its own logins. The OIDC provider is already configured, so it should start working once an Enterprise token is added, but that part is **untested**. A possible community-edition route is LDAP (OpenProject supports it); contributions welcome.
+- Uses Keycloak's embedded database (fine for small tenants; back it up with `tenantctl backup`, it is included). Containers reach `auth.<host>` through the host's Caddy, with the proxy's CA added to their trust bundle for the local trial.
+- Verified by `python scripts/sso_smoke.py acme`: real sign-ins to Git and the docs portal, per-user repository access (a private repo stays hidden), admin-only report, single sign-on across apps, sign-out.
 
 ## End-to-end tests
 - `python scripts/e2e.py`: dev stack; creates a project, work package and repo and tests the whole chain.
+- `python scripts/sso_smoke.py acme`: after `enable-sso`; drives real Keycloak sign-ins.
+- `python scripts/digest_smoke.py acme`: configures the digest against a local receiver and checks what is delivered.
 - `python scripts/tenant_smoke.py acme`: tenant stack; routing, docs-portal protection, webhook isolation, stale report and the git-to-ticket chain via an old Jira key.
 
 ## Roadmap
-- Stale detector: push a weekly digest (Slack/e-mail) instead of just the endpoint.
+- Digest: per-assignee e-mails and Microsoft Teams format.
 - EU-hosted LLM (e.g. Mistral): work package summaries and draft docs from closed tickets.
-- Scheduled offsite backups, SSO, billing.
+- SSO for OpenProject itself (needs Enterprise edition, or an LDAP route), scheduled offsite backups, billing.
 - Test the importers against real Jira/Confluence exports.
 
 ## Tests

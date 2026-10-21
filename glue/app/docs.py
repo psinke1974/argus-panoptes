@@ -6,10 +6,10 @@ import re
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, Response
 
-from . import config, legacy
+from . import auth, config, legacy
 from .refs import parse_refs
 
 router = APIRouter(prefix="/docs")
@@ -75,7 +75,7 @@ async def raw(g: httpx.AsyncClient, repo: str, path: str) -> str:
     return r.text
 
 
-@router.get("/{owner}/{name}", response_class=HTMLResponse)
+@router.get("/{owner}/{name}", response_class=HTMLResponse, dependencies=[Depends(auth.repo_access)])
 async def index(owner: str, name: str):
     repo = f"{owner}/{name}"
     async with gitea() as g:
@@ -84,7 +84,7 @@ async def index(owner: str, name: str):
     return page(repo, paths, f"Docs {repo}", body)
 
 
-@router.get("/{owner}/{name}/search", response_class=HTMLResponse)
+@router.get("/{owner}/{name}/search", response_class=HTMLResponse, dependencies=[Depends(auth.repo_access)])
 async def search(owner: str, name: str, q: str = ""):
     repo = f"{owner}/{name}"
     hits = []
@@ -99,7 +99,7 @@ async def search(owner: str, name: str, q: str = ""):
     return page(repo, paths, "Search", body, q)
 
 
-@router.get("/{owner}/{name}/_raw/{path:path}")
+@router.get("/{owner}/{name}/_raw/{path:path}", dependencies=[Depends(auth.repo_access)])
 async def raw_file(owner: str, name: str, path: str):
     async with gitea() as g:
         r = await g.get(f"/api/v1/repos/{owner}/{name}/raw/{quote(path)}")
@@ -108,7 +108,7 @@ async def raw_file(owner: str, name: str, path: str):
     return Response(r.content, media_type=mimetypes.guess_type(path)[0] or "application/octet-stream")
 
 
-@router.get("/{owner}/{name}/{path:path}", response_class=HTMLResponse)
+@router.get("/{owner}/{name}/{path:path}", response_class=HTMLResponse, dependencies=[Depends(auth.repo_access)])
 async def view(owner: str, name: str, path: str):
     repo = f"{owner}/{name}"
     if not is_doc(path):

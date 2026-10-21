@@ -26,16 +26,21 @@ def check(cond, msg):
 check(op.get("/").status_code == 200, "OpenProject API reachable over HTTPS with the API key")
 check(gt.get("/user").json()["login"] == "panoptes", "Gitea API reachable over HTTPS")
 docs = f"https://docs.{host}"
-check(http.get(f"{docs}/health").status_code == 401, "docs portal refuses anonymous requests")
-auth = ("docs", env["DOCS_PASSWORD"])
-check(http.get(f"{docs}/health", auth=auth).status_code == 200, "docs portal accepts the tenant password")
+sso = env.get("SSO_ENABLED") == "1"
+auth = None if sso else ("docs", env["DOCS_PASSWORD"])
+if sso:  # per-user checks live in scripts/sso_smoke.py
+    r = httpx.Client(verify=verify, timeout=30, follow_redirects=False).get(f"{docs}/docs/panoptes/x")
+    check(r.status_code in (302, 307) and "/auth/login" in r.headers["location"], "docs portal sends anonymous users to the SSO login")
+else:
+    check(http.get(f"{docs}/health").status_code == 401, "docs portal refuses anonymous requests")
+    check(http.get(f"{docs}/health", auth=auth).status_code == 200, "docs portal accepts the tenant password")
 check(http.post(f"{docs}/hooks/gitea", auth=auth, content=b"{}").status_code == 404, "webhook endpoint is not reachable from outside")
 
-if gt.get("/repos/panoptes/confluence-demo").status_code == 200:
+if not sso and gt.get("/repos/panoptes/confluence-demo").status_code == 200:
     r = http.get(f"{docs}/docs/panoptes/confluence-demo", auth=auth)
     check(r.status_code == 200 and "docs/home.md" in r.text, "docs portal lists the imported Confluence pages")
 
-if Path(f"tenants/{tenant}/import-state/jira-api-demo.json").exists():
+if not sso and Path(f"tenants/{tenant}/import-state/jira-api-demo.json").exists():
     r = http.get(f"{docs}/stale", params={"project": "api-demo", "days": 0, "format": "json"}, auth=auth)
     check(r.status_code == 200 and "items" in r.json(), "stale-ticket report works")
 

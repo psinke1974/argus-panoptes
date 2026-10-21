@@ -1,15 +1,24 @@
 # One Panoptes stack per customer (tenant). Do not use directly: deploy/tenantctl.py creates the .env and routing.
+#
+# SSO plumbing (used by every service that talks to Keycloak at https://auth.<host>):
+#  - extra_hosts host-gateway: the public name resolves to the host, where Caddy listens on 443
+#  - ca-bundle.crt: system roots (+ the proxy's local CA for the *.localhost trial), made by tenantctl
 name: panoptes-${TENANT:?}
 services:
   openproject:
     image: openproject/openproject:17
     restart: unless-stopped
+    extra_hosts: ["auth.${OP_HOST}:host-gateway"]
     environment:
       OPENPROJECT_HOST__NAME: ${OP_HOST:?}
       OPENPROJECT_HTTPS: "true"
       SECRET_KEY_BASE: ${OP_SECRET_KEY_BASE:?}
-      OPENPROJECT_DEFAULT__LANGUAGE: ${LANGUAGE:-nl}
-    volumes: [op_pgdata:/var/openproject/pgdata, op_assets:/var/openproject/assets]
+      OPENPROJECT_DEFAULT__LANGUAGE: ${LANGUAGE:-en}
+      SSL_CERT_FILE: /etc/panoptes/ca-bundle.crt
+    volumes:
+      - op_pgdata:/var/openproject/pgdata
+      - op_assets:/var/openproject/assets
+      - ${TENANT_DIR:?}/ca-bundle.crt:/etc/panoptes/ca-bundle.crt:ro
     networks:
       internal:
       proxy: {aliases: ["${TENANT}-op"]}
@@ -17,14 +26,23 @@ services:
   gitea:
     image: gitea/gitea:1.24
     restart: unless-stopped
+    extra_hosts: ["auth.${OP_HOST}:host-gateway"]
     environment:
       GITEA__server__DOMAIN: git.${OP_HOST}
       GITEA__server__ROOT_URL: https://git.${OP_HOST}/
       GITEA__server__DISABLE_SSH: "true"          # HTTPS clone only: no per-tenant SSH port needed
       GITEA__webhook__ALLOWED_HOST_LIST: glue
-      GITEA__service__DISABLE_REGISTRATION: "true"
+      # No password sign-up. Accounts are only created by an admin or (with SSO enabled) on first SSO sign-in.
+      GITEA__service__DISABLE_REGISTRATION: "false"
+      GITEA__service__ALLOW_ONLY_EXTERNAL_REGISTRATION: "true"
+      GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION: "true"
+      GITEA__oauth2_client__USERNAME: preferred_username
+      GITEA__oauth2_client__ACCOUNT_LINKING: auto
       GITEA__security__INSTALL_LOCK: "true"
-    volumes: [gitea_data:/data]
+      SSL_CERT_FILE: /etc/panoptes/ca-bundle.crt
+    volumes:
+      - gitea_data:/data
+      - ${TENANT_DIR:?}/ca-bundle.crt:/etc/panoptes/ca-bundle.crt:ro
     networks:
       internal:
       proxy: {aliases: ["${TENANT}-git"]}
@@ -33,6 +51,7 @@ services:
     image: panoptes-glue:local
     build: ../../glue
     restart: unless-stopped
+    extra_hosts: ["auth.${OP_HOST}:host-gateway"]
     environment:
       OP_API_KEY: ${OP_API_KEY:-}
       GITEA_TOKEN: ${GITEA_TOKEN:-}
@@ -46,11 +65,53 @@ services:
       PUBLIC_URL: https://docs.${OP_HOST}
       OP_PUBLIC_URL: https://${OP_HOST}
       LEGACY_KEYS_DIR: /data/import-state
-    volumes: ["${TENANT_DIR:?}/import-state:/data/import-state:ro"]
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-panoptes-docs}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      DIGEST_PROJECTS: ${DIGEST_PROJECTS:-}
+      DIGEST_DAYS: ${DIGEST_DAYS:-30}
+      DIGEST_WEEKDAY: ${DIGEST_WEEKDAY:-0}
+      DIGEST_HOUR: ${DIGEST_HOUR:-8}
+      DIGEST_TZ: ${DIGEST_TZ:-UTC}
+      DIGEST_WEBHOOK_URL: ${DIGEST_WEBHOOK_URL:-}
+      DIGEST_WEBHOOK_FORMAT: ${DIGEST_WEBHOOK_FORMAT:-slack}
+      DIGEST_SMTP_HOST: ${DIGEST_SMTP_HOST:-}
+      DIGEST_SMTP_PORT: ${DIGEST_SMTP_PORT:-587}
+      DIGEST_SMTP_USER: ${DIGEST_SMTP_USER:-}
+      DIGEST_SMTP_PASSWORD: ${DIGEST_SMTP_PASSWORD:-}
+      DIGEST_MAIL_FROM: ${DIGEST_MAIL_FROM:-}
+      DIGEST_MAIL_TO: ${DIGEST_MAIL_TO:-}
+      SSL_CERT_FILE: /etc/panoptes/ca-bundle.crt
+    volumes:
+      - glue_state:/data/state
+      - ${TENANT_DIR:?}/import-state:/data/import-state:ro
+      - ${TENANT_DIR:?}/ca-bundle.crt:/etc/panoptes/ca-bundle.crt:ro
     depends_on: [openproject, gitea]
     networks:
       internal:
       proxy: {aliases: ["${TENANT}-glue"]}
+
+  # Optional single sign-on: started only with `--profile sso` (tenantctl enable-sso).
+  keycloak:
+    profiles: ["sso"]
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ["start", "--import-realm"]
+    environment:
+      KC_HOSTNAME: https://auth.${OP_HOST}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_DB: dev-file
+      KC_BOOTSTRAP_ADMIN_USERNAME: kcadmin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-unused}
+      JAVA_OPTS_KC_HEAP: "-Xms256m -Xmx640m"
+    volumes:
+      - kc_data:/opt/keycloak/data
+      - ${TENANT_DIR:?}/keycloak:/opt/keycloak/data/import:ro
+    networks:
+      internal:
+      proxy: {aliases: ["${TENANT}-kc"]}
 
 networks:
   internal:
@@ -61,3 +122,5 @@ volumes:
   op_pgdata:
   op_assets:
   gitea_data:
+  kc_data:
+  glue_state:
