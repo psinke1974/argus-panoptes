@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly off-site backup verification of Panoptes tenant %i
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

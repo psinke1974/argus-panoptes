@@ -6,3 +6,4 @@ tenants/
 deploy/proxy/tenants/*.caddy
 !deploy/proxy/tenants/00-placeholder.caddy
 backups/
+deploy/offsite.env

@@ -1,0 +1,13 @@
+# Encrypted off-site backup of one tenant. Instance name = tenant: panoptes-offsite-backup@acme.service
+# Install: copy the .service and .timer files to /etc/systemd/system/, adjust the path below, then
+#   systemctl daemon-reload && systemctl enable --now panoptes-offsite-backup@acme.timer
+[Unit]
+Description=Panoptes encrypted off-site backup of tenant %i
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/panoptes
+ExecStart=/usr/bin/python3 /opt/panoptes/deploy/tenantctl.py offsite backup %i
+TimeoutStartSec=2h

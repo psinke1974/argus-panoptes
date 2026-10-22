@@ -1,0 +1,12 @@
+# Weekly restore drill (non-destructive): integrity check, snapshot age and a test restore of key files.
+# A failure is reported to OFFSITE_NOTIFY_WEBHOOK when configured.
+[Unit]
+Description=Panoptes off-site backup verification of tenant %i
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/panoptes
+ExecStart=/usr/bin/python3 /opt/panoptes/deploy/tenantctl.py offsite verify %i
+TimeoutStartSec=2h

@@ -6,6 +6,8 @@
   tenantctl.py enable-ldap acme [--admin-user owner] [--admin-email ...]   (one account for OpenProject, Git and docs)
   tenantctl.py ldap-user acme --username jan --email jan@acme.com [--admin]
   tenantctl.py digest acme --projects proj1,proj2 --webhook-url https://hooks.slack.com/...   (weekly stale-ticket digest)
+  tenantctl.py offsite configure --repository s3:https://s3.example.eu/bucket/panoptes --generate-password   (encrypted off-site backups, restic)
+  tenantctl.py offsite backup acme|--all     /  offsite list acme  /  offsite verify acme  /  offsite restore acme --yes
   tenantctl.py list
   tenantctl.py backup acme [--out backups]      (consistent: the stack is stopped for ~1 min)
   tenantctl.py restore acme backups/acme-<timestamp>.tar --yes
@@ -16,6 +18,7 @@ Production / self-hosting: use a real base domain with wildcard DNS (*.base) poi
 """
 import argparse
 import json
+import os
 import re
 import secrets
 import shutil
@@ -585,6 +588,230 @@ def ldap_user(a) -> None:
     print(f"user {a.username} ready" + ("" if a.password else f"; initial password: {pw}") + (" (member of group 'admin')" if a.admin else ""))
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Encrypted off-site backups with restic (client-side encryption, deduplicated snapshots, S3/SFTP/... backends).
+# The repository password lives in deploy/offsite.env and NOT in the tenant folder, so it is never part of a snapshot.
+# ---------------------------------------------------------------------------------------------------------------
+OFFSITE_ENV = Path(os.environ.get("PANOPTES_OFFSITE_ENV", ROOT / "deploy" / "offsite.env"))
+RESTIC_IMAGE = "restic/restic:0.17.3"
+
+
+def fresh_volume(name: str) -> None:
+    sh("docker", "volume", "rm", "-f", name, check=False)
+    sh("docker", "volume", "create", name)
+
+
+def volume_cat(volume_name: str, path: str) -> str:
+    return sh("docker", "run", "--rm", "-v", f"{volume_name}:/v:ro", "alpine", "cat", f"/v/{path}", check=False)
+
+
+def offsite_conf() -> dict:
+    if not OFFSITE_ENV.exists():
+        sys.exit("off-site backups are not configured yet: tenantctl.py offsite configure --repository <repo> --generate-password")
+    conf = read_env(OFFSITE_ENV)
+    if not conf.get("RESTIC_REPOSITORY") or not conf.get("RESTIC_PASSWORD"):
+        sys.exit(f"{OFFSITE_ENV} needs RESTIC_REPOSITORY and RESTIC_PASSWORD")
+    return conf
+
+
+def restic(t: str, conf: dict, args: list, mounts: tuple = (), user: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    """Run restic in a container against the tenant's own repository (<repository>/<tenant>).
+    Secrets are passed by name (-e KEY) so they never show up in the process list."""
+    repo = conf["RESTIC_REPOSITORY"].rstrip("/")
+    local = repo.startswith("/")
+    secret_keys = [k for k in conf if k not in ("RESTIC_REPOSITORY",) and not k.startswith("OFFSITE_")]
+    env = {**os.environ, **{k: conf[k] for k in secret_keys}, "RESTIC_REPOSITORY": f"/repo/{t}" if local else f"{repo}/{t}"}
+    cmd = ["docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway", "-e", "RESTIC_REPOSITORY", *[x for k in secret_keys for x in ("-e", k)]]
+    if user:
+        cmd += ["--user", user]
+    if local:
+        Path(repo).mkdir(parents=True, exist_ok=True)
+        cmd += ["-v", f"{repo}:/repo"]
+    cmd += [*mounts, RESTIC_IMAGE, *args]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ROOT)
+    if check and r.returncode != 0:
+        sys.exit(f"restic {' '.join(args[:2])} failed:\n{r.stdout[-600:]}{r.stderr[-1200:]}")
+    return r
+
+
+def restic_ensure_repo(t: str, conf: dict) -> None:
+    if restic(t, conf, ["cat", "config"], check=False).returncode != 0:
+        print("• initialising the encrypted repository")
+        restic(t, conf, ["init"])
+
+
+def notify_failure(conf: dict, text: str) -> None:
+    url = conf.get("OFFSITE_NOTIFY_WEBHOOK")
+    if url:
+        try:
+            https_json(url, "POST", body={"text": f"Panoptes off-site backup: {text}"})
+        except Exception:  # the notification is best effort
+            pass
+
+
+def offsite_configure(a) -> None:
+    conf = read_env(OFFSITE_ENV) if OFFSITE_ENV.exists() else {}
+    generated = None
+    if a.password:
+        conf["RESTIC_PASSWORD"] = a.password
+    elif a.generate_password:
+        if conf.get("RESTIC_PASSWORD") and not a.force:
+            sys.exit("a repository password is already configured; changing it makes existing snapshots unreadable (use --force to overwrite)")
+        generated = conf["RESTIC_PASSWORD"] = secrets.token_urlsafe(32)
+    if a.repository:
+        conf["RESTIC_REPOSITORY"] = a.repository
+    for flag, key in (("aws_access_key_id", "AWS_ACCESS_KEY_ID"), ("aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"), ("notify_webhook", "OFFSITE_NOTIFY_WEBHOOK"),
+                      ("keep_daily", "OFFSITE_KEEP_DAILY"), ("keep_weekly", "OFFSITE_KEEP_WEEKLY"), ("keep_monthly", "OFFSITE_KEEP_MONTHLY")):
+        if getattr(a, flag) is not None:
+            conf[key] = str(getattr(a, flag))
+    for kv in a.set or []:
+        k, _, v = kv.partition("=")
+        conf[k] = v
+    conf.setdefault("OFFSITE_KEEP_DAILY", "7")
+    conf.setdefault("OFFSITE_KEEP_WEEKLY", "4")
+    conf.setdefault("OFFSITE_KEEP_MONTHLY", "6")
+    if not conf.get("RESTIC_REPOSITORY") or not conf.get("RESTIC_PASSWORD"):
+        sys.exit("need --repository and a password (--generate-password or --password)")
+    OFFSITE_ENV.write_text("\n".join(f"{k}={v}" for k, v in conf.items()) + "\n")
+    OFFSITE_ENV.chmod(0o600)
+    print(f"saved {OFFSITE_ENV} (chmod 600)")
+    if generated:
+        print(f"""
+IMPORTANT: the repository password was generated just now:
+
+    {generated}
+
+Store it in your password manager NOW. Without it the off-site backups cannot be decrypted, and it is deliberately not
+part of any backup. (It is also in {OFFSITE_ENV}, which is not in git.)""")
+
+
+def offsite_backup(a) -> None:
+    conf = offsite_conf()
+    names = sorted(d.name for d in TENANTS.iterdir() if (d / ".env").exists()) if a.all else [a.name]
+    if not names or names == [None]:
+        sys.exit("give a tenant name or --all")
+    failed = []
+    for t in names:
+        try:
+            offsite_backup_one(t, conf)
+        except SystemExit as err:
+            failed.append(t)
+            notify_failure(conf, f"tenant {t} failed: {err}")
+            print(f"FAILED {t}: {err}", file=sys.stderr)
+    if failed:
+        sys.exit(f"backup failed for: {', '.join(failed)}")
+
+
+def offsite_backup_one(t: str, conf: dict) -> None:
+    tdir = TENANTS / t
+    if not (tdir / ".env").exists():
+        sys.exit(f"unknown tenant {t}")
+    host = f"panoptes-{t}"
+    restic_ensure_repo(t, conf)
+    print(f"• {t}: stopping the stack for a consistent snapshot")
+    compose(t, "stop")
+    stage = f"panoptes-{t}_backup_stage"
+    try:
+        # restic cannot read host bind mounts on Docker Desktop (I/O errors), so stage the tenant files in a volume first
+        fresh_volume(stage)
+        route = PROXY_DIR / "tenants" / f"{t}.caddy"
+        sh("docker", "run", "--rm", "-v", f"{stage}:/stage", "-v", f"{tdir}:/src:ro", "-v", f"{route.parent}:/routes:ro", "alpine", "sh", "-c",
+           f"mkdir -p /stage/tenant /stage/route && cp -a /src/. /stage/tenant/ && rm -f /stage/tenant/ca-bundle.crt && "
+           f"{{ [ -f /routes/{t}.caddy ] && cp /routes/{t}.caddy /stage/route/route.caddy; true; }}")
+        mounts = [x for v in volumes_for(t) for x in ("-v", f"{volume(t, v)}:/data/volumes/{v}:ro")] + ["-v", f"{stage}:/data/stage:ro"]
+        print(f"• {t}: encrypting and uploading (only changed data is sent after the first run)")
+        r = restic(t, conf, ["backup", "/data", "--host", host, "--tag", "panoptes", "--tag", f"tenant-{t}", "--json"], tuple(mounts))
+        summary = next((json.loads(l) for l in r.stdout.splitlines() if '"message_type":"summary"' in l.replace(" ", "")), {})
+    finally:
+        sh("docker", "volume", "rm", "-f", stage, check=False)
+        compose(t, "start")
+    keep = [x for k, f in (("OFFSITE_KEEP_DAILY", "--keep-daily"), ("OFFSITE_KEEP_WEEKLY", "--keep-weekly"), ("OFFSITE_KEEP_MONTHLY", "--keep-monthly")) for x in (f, conf.get(k, "0"))]
+    restic(t, conf, ["forget", "--host", host, "--tag", "panoptes", *keep, "--prune"])
+    mb = summary.get("data_added", 0) / 1024 / 1024
+    print(f"• {t}: snapshot {summary.get('snapshot_id', '?')[:8]} stored ({mb:.1f} MB new data uploaded); retention applied")
+
+
+def offsite_list(a) -> None:
+    conf = offsite_conf()
+    print(restic(a.name, conf, ["snapshots", "--host", f"panoptes-{a.name}", "--tag", "panoptes"]).stdout)
+
+
+def offsite_verify(a) -> None:
+    """Restore drill, non-destructive: repository integrity, snapshot age, and a test restore of key files into a temp folder."""
+    conf = offsite_conf()
+    t, host = a.name, f"panoptes-{a.name}"
+    try:
+        snaps = json.loads(restic(t, conf, ["snapshots", "--host", host, "--tag", "panoptes", "--json", "--latest", "1"]).stdout or "[]")
+        if not snaps:
+            sys.exit(f"no snapshots for {t}")
+        latest = snaps[-1]
+        taken = datetime.datetime.fromisoformat(latest["time"][:19]).replace(tzinfo=datetime.timezone.utc)
+        age_h = (datetime.datetime.now(datetime.timezone.utc) - taken).total_seconds() / 3600
+        print(f"• latest snapshot {latest['short_id']} is {age_h:.1f} hours old")
+        if age_h > a.max_age_hours:
+            sys.exit(f"latest snapshot is older than {a.max_age_hours} hours")
+        print("• checking repository integrity (structure + 5% of the data)")
+        restic(t, conf, ["check", "--read-data-subset=5%"])
+        print("• test-restoring key files")
+        scratch = f"panoptes-{t}_verify_scratch"
+        fresh_volume(scratch)
+        try:
+            restic(t, conf, ["restore", latest["id"], "--target", "/restore", "--include", "/data/stage/tenant/.env", "--include", "/data/volumes/op_pgdata/PG_VERSION"],
+                   ("-v", f"{scratch}:/restore",))
+            if f"TENANT={t}" not in volume_cat(scratch, "data/stage/tenant/.env").splitlines():
+                sys.exit("restored .env does not belong to this tenant")
+            if not volume_cat(scratch, "data/volumes/op_pgdata/PG_VERSION").strip():
+                sys.exit("the OpenProject database files are missing from the snapshot")
+        finally:
+            sh("docker", "volume", "rm", "-f", scratch, check=False)
+        print(f"verified: {t} can be restored (snapshot {latest['short_id']})")
+    except SystemExit as err:
+        notify_failure(conf, f"verification of {t} failed: {err}")
+        raise
+
+
+def offsite_restore(a) -> None:
+    """Restore a tenant from the off-site repository (replaces everything currently stored for that tenant)."""
+    if not a.yes:
+        sys.exit("restore REPLACES all data of this tenant with the snapshot; repeat with --yes")
+    conf = offsite_conf()
+    t, host = a.name, f"panoptes-{a.name}"
+    snap = a.snapshot
+    tdir = TENANTS / t
+    uid = f"{os.getuid()}:{os.getgid()}"
+    stage = f"panoptes-{t}_restore_stage"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        print("• reading the snapshot's tenant settings")
+        fresh_volume(stage)
+        restic(t, conf, ["restore", snap, "--host", host, "--tag", "panoptes", "--target", "/restore", "--include", "/data/stage"], ("-v", f"{stage}:/restore/data/stage",))
+        sh("docker", "run", "--rm", "-v", f"{stage}:/s:ro", "-v", f"{tmp}:/out", "alpine", "sh", "-c", f"cp -a /s/. /out/ && chown -R {uid} /out")
+        sh("docker", "volume", "rm", "-f", stage, check=False)
+        flags = read_env(tmp / "tenant" / ".env")
+        vols = ("op_pgdata", "op_assets", "gitea_data") + (("kc_data",) if flags.get("SSO_ENABLED") == "1" else ()) + (("lldap_data",) if flags.get("LDAP_ENABLED") == "1" else ())
+        if (tdir / ".env").exists():
+            compose(t, "down", "-v")
+        for v in vols:
+            fresh_volume(volume(t, v))
+        print("• restoring the data volumes")
+        restic(t, conf, ["restore", snap, "--host", host, "--tag", "panoptes", "--target", "/restore", "--include", "/data/volumes"],
+               tuple(x for v in vols for x in ("-v", f"{volume(t, v)}:/restore/data/volumes/{v}")))
+        shutil.rmtree(tdir, ignore_errors=True)
+        shutil.copytree(tmp / "tenant", tdir)
+        (tdir / ".env").chmod(0o600)
+        set_env(tdir / ".env", "TENANT_DIR", str(tdir))
+        (PROXY_DIR / "tenants").mkdir(parents=True, exist_ok=True)
+        if (tmp / "route" / "route.caddy").exists():
+            shutil.copy(tmp / "route" / "route.caddy", PROXY_DIR / "tenants" / f"{t}.caddy")
+    sh("docker", "network", "create", "panoptes-proxy", check=False)
+    reload_proxy()
+    e = read_env(tdir / ".env")
+    ensure_ca_bundle(tdir, e["OP_HOST"].endswith("localhost"))
+    compose(t, "up", "-d")
+    wait_ready(f"https://{e['OP_HOST']}/health_checks/default", f"OpenProject of {t}")
+    print(f"tenant {t} restored from the off-site snapshot {snap}")
+
+
 def list_tenants(_) -> None:
     if not TENANTS.exists() or not any(TENANTS.iterdir()):
         print("no tenants")
@@ -739,6 +966,37 @@ def main() -> None:
     lu.add_argument("--password", help="default: generated and printed")
     lu.add_argument("--admin", action="store_true", help="add to the directory group 'admin' (Keycloak role 'admin')")
     lu.set_defaults(fn=ldap_user)
+    off = sub.add_parser("offsite", help="encrypted off-site backups (restic)")
+    osub = off.add_subparsers(dest="ocmd", required=True)
+    oc = osub.add_parser("configure")
+    oc.add_argument("--repository", help="restic repository: s3:https://host/bucket/prefix, sftp:user@host:/path, rclone:remote:path or a local /path")
+    oc.add_argument("--password", help="repository password (or use --generate-password)")
+    oc.add_argument("--generate-password", action="store_true")
+    oc.add_argument("--force", action="store_true")
+    oc.add_argument("--aws-access-key-id")
+    oc.add_argument("--aws-secret-access-key")
+    oc.add_argument("--keep-daily", type=int)
+    oc.add_argument("--keep-weekly", type=int)
+    oc.add_argument("--keep-monthly", type=int)
+    oc.add_argument("--notify-webhook", help="Slack-compatible webhook that hears about failed backups/verifications")
+    oc.add_argument("--set", action="append", metavar="KEY=VALUE", help="extra backend settings (for example B2_ACCOUNT_ID=...)")
+    oc.set_defaults(fn=offsite_configure)
+    ob = osub.add_parser("backup")
+    ob.add_argument("name", nargs="?")
+    ob.add_argument("--all", action="store_true")
+    ob.set_defaults(fn=offsite_backup)
+    ol = osub.add_parser("list")
+    ol.add_argument("name")
+    ol.set_defaults(fn=offsite_list)
+    ov = osub.add_parser("verify")
+    ov.add_argument("name")
+    ov.add_argument("--max-age-hours", type=int, default=36)
+    ov.set_defaults(fn=offsite_verify)
+    orr = osub.add_parser("restore")
+    orr.add_argument("name")
+    orr.add_argument("--snapshot", default="latest")
+    orr.add_argument("--yes", action="store_true")
+    orr.set_defaults(fn=offsite_restore)
     sub.add_parser("list").set_defaults(fn=list_tenants)
     b = sub.add_parser("backup")
     b.add_argument("name")

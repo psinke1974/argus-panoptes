@@ -19,7 +19,7 @@ The end-to-end scripts need Docker: see the README ("Try it in about 5 minutes",
 ## Layout
 - `glue/`: FastAPI service between Gitea and OpenProject (webhooks, release notes, stale report and weekly digest, docs portal, OIDC sign-in).
 - `panoptes_import/`: Jira and Confluence importers (CSV/HTML export and REST API).
-- `deploy/`: Caddy proxy, per-tenant compose file, `tenantctl.py` (create/list/enable-sso/enable-ldap/ldap-user/digest/backup/restore/destroy).
+- `deploy/`: Caddy proxy, per-tenant compose file, `tenantctl.py` (create/list/enable-sso/enable-ldap/ldap-user/digest/backup/restore/offsite/destroy), `deploy/systemd/` (backup timers).
 - `tests_import/mock_atlassian.py`: a fake Jira/Confluence API that mimics the real response shapes.
 
 ## Pull requests

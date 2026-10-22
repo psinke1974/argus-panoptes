@@ -107,7 +107,26 @@ python3 deploy/tenantctl.py destroy acme --yes                               # r
 - Production needs wildcard DNS (`*.panoptes.example.com`) pointing at the server; Caddy then obtains Let's Encrypt certificates. Locally, `*.localhost` uses Caddy's internal CA (accept the browser warning, or run `caddy trust` inside the Caddy container's CA).
 - Rough sizing: about 2 GB RAM per tenant for OpenProject, plus a little for Gitea and the glue.
 - Without SSO the docs portal is protected with HTTP basic auth (`docs` / `DOCS_PASSWORD` in the tenant `.env`), because it reads all repositories with the service token. Webhooks are never reachable from outside. With SSO enabled (below) access is checked per user.
-- Not built yet: scheduled/encrypted offsite backups, billing.
+- Not built yet: billing.
+
+### Encrypted off-site backups (restic)
+```bash
+python3 deploy/tenantctl.py offsite configure --generate-password \
+    --repository s3:https://s3.fr-par.scw.cloud/my-bucket/panoptes \
+    --aws-access-key-id ... --aws-secret-access-key ... [--notify-webhook https://hooks.slack.com/...]
+python3 deploy/tenantctl.py offsite backup acme            # or --all
+python3 deploy/tenantctl.py offsite list acme
+python3 deploy/tenantctl.py offsite verify acme            # restore drill, non-destructive
+python3 deploy/tenantctl.py offsite restore acme --yes     # replaces the tenant with the latest snapshot
+```
+- **Encrypted before it leaves the server** ([restic](https://restic.net), AES-256): the storage provider never sees plaintext. A test proves that the tenant's secret key cannot be found in any stored object.
+- **Any backend restic supports:** S3-compatible object storage (pick an EU provider such as Scaleway, Hetzner or OVHcloud; check their S3 endpoint docs), SFTP, `rclone:` remotes, or a local/NFS path. Extra backend settings: `--set KEY=VALUE`.
+- **Incremental:** the first run uploads everything, later runs only changed data. Each tenant has its own repository (`<repository>/<tenant>`). The stack is stopped while the snapshot is taken (typically a minute or less after the first run), so schedule it at night.
+- **Retention:** 7 daily, 4 weekly and 6 monthly snapshots by default (`--keep-daily/--keep-weekly/--keep-monthly`).
+- **The repository password is not in any backup.** It is shown once when generated and stored in `deploy/offsite.env` (not in git). **Put it in a password manager now:** without it the backups cannot be decrypted.
+- **Schedule:** systemd templates in `deploy/systemd/` (nightly backup, weekly verify): copy them to `/etc/systemd/system/`, adjust the path, then `systemctl enable --now panoptes-offsite-backup@acme.timer panoptes-offsite-verify@acme.timer`. Cron works too: `0 3 * * * cd /opt/panoptes && python3 deploy/tenantctl.py offsite backup --all`. Failures exit non-zero and notify the webhook if configured.
+- **Restore drill:** `offsite verify` (weekly timer) checks integrity, snapshot age and test-restores key files. At least once a year do the real drill on a spare machine: install Docker and Panoptes, copy `deploy/offsite.env`, then `python3 deploy/tenantctl.py offsite restore acme --yes` and run the smoke tests. Verified in CI-less form here: destroy a tenant, restore from an S3 repository, and `ldap_smoke.py` / `sso_smoke.py` pass again.
+- Tested with `python scripts/offsite_smoke.py acme` against a local S3-compatible server (rclone): encryption proof, incremental upload, verification, wrong-password rejection. Not yet tested against a real cloud provider.
 
 ### Single sign-on (Keycloak)
 ```bash
@@ -137,13 +156,14 @@ Adds a small LDAP directory ([lldap](https://github.com/lldap/lldap), web UI at 
 - `python scripts/e2e.py`: dev stack; creates a project, work package and repo and tests the whole chain.
 - `python scripts/sso_smoke.py acme`: after `enable-sso`; drives real Keycloak sign-ins.
 - `python scripts/ldap_smoke.py acme`: after `enable-ldap`; one directory account across OpenProject, Git and docs.
+- `python scripts/offsite_smoke.py acme`: encrypted off-site backup against a local S3-compatible server (non-destructive).
 - `python scripts/digest_smoke.py acme`: configures the digest against a local receiver and checks what is delivered.
 - `python scripts/tenant_smoke.py acme`: tenant stack; routing, docs-portal protection, webhook isolation, stale report and the git-to-ticket chain via an old Jira key.
 
 ## Roadmap
 - Digest: per-assignee e-mails and Microsoft Teams format.
 - EU-hosted LLM (e.g. Mistral): work package summaries and draft docs from closed tickets.
-- True single sign-on for OpenProject (needs the Enterprise edition), scheduled off-site backups, billing.
+- True single sign-on for OpenProject (needs the Enterprise edition), billing.
 - Test the importers against real Jira/Confluence exports.
 
 ## Tests
