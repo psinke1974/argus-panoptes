@@ -262,3 +262,160 @@ def test_send_email(monkeypatch):
         monkeypatch.setattr(config, k, v)
     digest.send_email("Subject", "body")
     assert sent == {"host": ("smtp.example", 587), "tls": True, "login": "u", "to": "a@example.com, b@example.com", "subject": "Subject"}
+
+
+# ---- more git hosts: Forgejo, GitHub, GitLab (issue #9) ----
+def _client(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import config, main
+
+    monkeypatch.setattr(config, "WEBHOOK_SECRET", "s3cret")
+    fake = FakeOP()
+    monkeypatch.setattr(main, "op", fake)
+    return TestClient(main.app), fake
+
+
+def _sig(body: bytes) -> str:
+    return hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
+
+
+GH_PUSH = {"ref": "refs/heads/main", "repository": {"full_name": "acme/app", "default_branch": "main"},
+           "commits": [{"message": "Fixes OP#3: handle empty input", "url": "https://github.com/acme/app/commit/abc", "author": {"name": "Jan"}, "added": [], "modified": ["docs/a.md"]}]}
+
+
+def test_forgejo_headers_and_github_signature(monkeypatch):
+    c, fake = _client(monkeypatch)
+    body = json.dumps(GH_PUSH).encode()
+    h = {"Content-Type": "application/json"}
+    # Forgejo: its own headers
+    r = c.post("/hooks/forgejo", content=body, headers={**h, "X-Forgejo-Event": "push", "X-Forgejo-Signature": _sig(body)})
+    assert r.json() == {"handled": 1}
+    # Forgejo's Gitea-compatible headers also work
+    r = c.post("/hooks/forgejo", content=body, headers={**h, "X-Gitea-Event": "push", "X-Gitea-Signature": _sig(body)})
+    assert r.json() == {"handled": 1}
+    # GitHub: sha256=<hex> in X-Hub-Signature-256, and no Gitea doc links
+    r = c.post("/hooks/github", content=body, headers={**h, "X-GitHub-Event": "push", "X-Hub-Signature-256": "sha256=" + _sig(body)})
+    assert r.json() == {"handled": 1}
+    assert ("status", 3, config.STATUS_CLOSED) in fake.calls
+    bad = c.post("/hooks/github", content=body, headers={**h, "X-GitHub-Event": "push", "X-Hub-Signature-256": "sha256=deadbeef"})
+    assert bad.status_code == 401
+
+
+def test_github_pull_request_merge(monkeypatch):
+    c, fake = _client(monkeypatch)
+    pr = {"action": "closed", "repository": {"full_name": "acme/app"}, "pull_request": {"title": "Add thing (fixes OP#9)", "body": "", "html_url": "https://github.com/acme/app/pull/1", "merged": True}}
+    body = json.dumps(pr).encode()
+    r = c.post("/hooks/github", content=body, headers={"Content-Type": "application/json", "X-GitHub-Event": "pull_request", "X-Hub-Signature-256": "sha256=" + _sig(body)})
+    assert r.json() == {"handled": 1} and ("status", 9, config.STATUS_CLOSED) in fake.calls
+
+
+GL_PUSH = {"object_kind": "push", "ref": "refs/heads/main", "project": {"path_with_namespace": "acme/app", "default_branch": "main"},
+           "commits": [{"message": "Closes OP#4\n\nlonger text", "url": "https://gitlab.com/acme/app/-/commit/abc", "author": {"name": "Jan"}, "added": [], "modified": ["docs/x.md"]},
+                       {"message": "unrelated change", "url": "https://gitlab.com/acme/app/-/commit/def", "author": {"name": "Jan"}}]}
+
+
+def test_gitlab_push_and_token(monkeypatch):
+    c, fake = _client(monkeypatch)
+    body = json.dumps(GL_PUSH).encode()
+    h = {"Content-Type": "application/json", "X-Gitlab-Event": "Push Hook"}
+    assert c.post("/hooks/gitlab", content=body, headers=h).status_code == 401  # no token
+    assert c.post("/hooks/gitlab", content=body, headers={**h, "X-Gitlab-Token": "wrong"}).status_code == 401
+    r = c.post("/hooks/gitlab", content=body, headers={**h, "X-Gitlab-Token": "s3cret"})
+    assert r.json() == {"handled": 1}  # only the commit that mentions a work package
+    assert ("status", 4, config.STATUS_CLOSED) in fake.calls
+    assert c.post("/hooks/gitlab", content=body, headers={"Content-Type": "application/json", "X-Gitlab-Event": "Tag Push Hook", "X-Gitlab-Token": "s3cret"}).json() == {"handled": 0}
+
+
+def test_gitlab_merge_request_lifecycle(monkeypatch):
+    c, fake = _client(monkeypatch)
+    base = {"object_kind": "merge_request", "project": {"path_with_namespace": "acme/app"}}
+    h = {"Content-Type": "application/json", "X-Gitlab-Event": "Merge Request Hook", "X-Gitlab-Token": "s3cret"}
+    for action, expected in (("open", 1), ("update", 0), ("merge", 1), ("close", 0)):
+        body = json.dumps({**base, "object_attributes": {"action": action, "title": "Do it (fixes OP#5)", "description": "", "url": "https://gitlab.com/acme/app/-/merge_requests/2"}}).encode()
+        assert c.post("/hooks/gitlab", content=body, headers=h).json() == {"handled": expected}, action
+    assert ("status", 5, config.STATUS_IN_PROGRESS) in fake.calls and ("status", 5, config.STATUS_CLOSED) in fake.calls
+
+
+# ---- docs portal: table of contents, breadcrumbs, diagrams (issue #8) ----
+GITEA_HTML = ('<h1 id="user-content-t" dir="auto">Title</h1><h2 id="user-content-a" dir="auto">Alpha &amp; beta</h2><p>x</p>'
+              '<h3 id="user-content-b" dir="auto"><a href="#b">Beta</a></h3><h2 id="user-content-c" dir="auto">Gamma</h2>'
+              '<div class="code-block-container code-overflow-scroll"><pre class="code-block is-loading"><code class="chroma language-mermaid display">graph TD; A--&gt;B;\n</code></pre></div>'
+              '<div class="code-block-container code-overflow-scroll"><pre class="code-block"><code class="chroma language-python display">print(1)\n</code></pre></div>')
+
+
+def test_build_toc():
+    from app.docs import build_toc
+
+    toc = build_toc(GITEA_HTML)
+    assert 'href="#user-content-a">Alpha &amp; beta</a>' in toc and 'class="l3"><a href="#user-content-b">Beta</a>' in toc and "Title" not in toc  # h1 is not listed
+    assert build_toc('<h2 id="x">One</h2><h2 id="y">Two</h2>') == ""  # too short to need one
+
+
+def test_breadcrumbs_link_folders_to_their_page():
+    from app.docs import breadcrumbs
+
+    paths = ["docs/README.md", "docs/home.md", "docs/home/architecture.md", "docs/home/architecture/database.md", "docs/misc/loose.md"]
+    html_ = breadcrumbs("o/r", "docs/home/architecture/database.md", paths)
+    assert '<a href="/docs/o/r">o/r</a>' in html_ and '<a href="/docs/o/r/docs/README.md">docs</a>' in html_
+    assert '<a href="/docs/o/r/docs/home.md">home</a>' in html_ and '<a href="/docs/o/r/docs/home/architecture.md">architecture</a>' in html_
+    assert html_.endswith("<b>database</b></div>")
+    loose = breadcrumbs("o/r", "docs/misc/loose.md", paths)
+    assert " › misc › " in loose and 'href="/docs/o/r/docs/misc' not in loose  # no page for the folder: plain text
+
+
+def test_mermaidify_only_touches_mermaid_blocks(monkeypatch, tmp_path):
+    from app import docs
+
+    out, found = docs.mermaidify(GITEA_HTML)
+    assert found and '<pre class="mermaid">graph TD; A--&gt;B;\n</pre>' in out and "language-python" in out
+    assert docs.mermaidify("<p>nothing</p>") == ("<p>nothing</p>", False)
+    # script source: nothing by default, our own copy when the file exists, a URL when configured
+    monkeypatch.setattr(config, "MERMAID_JS_URL", "")
+    monkeypatch.setattr(config, "MERMAID_JS_PATH", str(tmp_path / "missing.js"))
+    assert docs.mermaid_src() == ""
+    (tmp_path / "m.js").write_text("// mermaid")
+    monkeypatch.setattr(config, "MERMAID_JS_PATH", str(tmp_path / "m.js"))
+    assert docs.mermaid_src() == "/docs/_assets/mermaid.js"
+    monkeypatch.setattr(config, "MERMAID_JS_URL", "https://cdn.example/m.js")
+    assert docs.mermaid_src() == "https://cdn.example/m.js"
+
+
+def test_doc_page_route_composes_breadcrumbs_toc_and_diagram(monkeypatch, tmp_path):
+    import httpx
+    from fastapi.testclient import TestClient
+
+    from app import docs, main
+
+    def gitea_handler(req: httpx.Request):
+        p = req.url.path
+        if p == "/api/v1/repos/o/r":
+            return httpx.Response(200, json={"default_branch": "main"})
+        if p.startswith("/api/v1/repos/o/r/git/trees/"):
+            return httpx.Response(200, json={"tree": [{"path": x, "type": "blob"} for x in ("docs/home.md", "docs/home/page.md")]})
+        if p.startswith("/api/v1/repos/o/r/raw/"):
+            return httpx.Response(200, text="# Title\n")
+        if p == "/api/v1/markdown":
+            return httpx.Response(200, text=GITEA_HTML)
+        if p == "/api/v1/repos/o/r/commits":
+            return httpx.Response(200, json=[{"commit": {"message": "docs: page (OP#12)"}}])
+        return httpx.Response(404)
+
+    monkeypatch.setattr(docs, "gitea", lambda: httpx.AsyncClient(base_url="http://gitea", transport=httpx.MockTransport(gitea_handler)))
+    (tmp_path / "m.js").write_text("// mermaid")
+    monkeypatch.setattr(config, "MERMAID_JS_URL", "")
+    monkeypatch.setattr(config, "MERMAID_JS_PATH", str(tmp_path / "m.js"))
+    monkeypatch.setattr(config, "OIDC_ISSUER", "")
+    c = TestClient(main.app)
+    r = c.get("/docs/o/r/docs/home/page.md")
+    assert r.status_code == 200
+    t = r.text
+    assert 'class="crumbs"' in t and 'href="/docs/o/r/docs/home.md">home</a>' in t  # breadcrumbs
+    assert 'class="toc"' in t and "On this page" in t  # table of contents
+    assert '<pre class="mermaid">graph TD; A--&gt;B;' in t and '<script src="/docs/_assets/mermaid.js"></script>' in t and 'securityLevel: "strict"' in t and "prefers-color-scheme" in t
+    assert "OP#12" in t  # existing backlink still there
+    assert c.get("/docs/_assets/mermaid.js").text == "// mermaid"
+    # without a mermaid copy the diagram stays a readable code block and no script is added
+    monkeypatch.setattr(config, "MERMAID_JS_PATH", str(tmp_path / "gone.js"))
+    t2 = c.get("/docs/o/r/docs/home/page.md").text
+    assert "language-mermaid" in t2 and "mermaid.js" not in t2 and c.get("/docs/_assets/mermaid.js").status_code == 404

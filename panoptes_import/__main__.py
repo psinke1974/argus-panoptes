@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -27,6 +28,9 @@ def main():
     j.add_argument("--identifier", help="OpenProject project identifier (default: Jira key)")
     j.add_argument("--user-map", help="CSV with columns jira_name,op_login")
     j.add_argument("--no-key-prefix", action="store_true", help="do not prefix titles with [KEY-1]")
+    j.add_argument("--map", help="JSON file with your own Jira->OpenProject name mappings (see README)")
+    j.add_argument("--no-add-members", action="store_true", help="do not add matched people to the project (they are then not linked as assignees)")
+    j.add_argument("--member-role", default="Member", help="OpenProject project role given to matched people (default: Member)")
     j.add_argument("--dry-run", action="store_true")
     c = sub.add_parser("confluence", help="Confluence HTML export -> Markdown in a Gitea repository")
     c.add_argument("export", help="zip file or extracted directory")
@@ -45,6 +49,9 @@ def main():
             q.add_argument("--project-name")
             q.add_argument("--user-map")
             q.add_argument("--no-key-prefix", action="store_true")
+            q.add_argument("--map", help="JSON file with your own Jira->OpenProject name mappings (see README)")
+            q.add_argument("--no-add-members", action="store_true", help="do not add matched people to the project (they are then not linked as assignees)")
+            q.add_argument("--member-role", default="Member", help="OpenProject project role given to matched people (default: Member)")
             q.add_argument("--no-attachments", action="store_true")
             q.add_argument("--dry-run", action="store_true")
         else:
@@ -61,16 +68,17 @@ def main():
 
 
     if a.cmd in ("jira", "jira-api"):
+        name_map = json.loads(Path(a.map).read_text(encoding="utf-8")) if a.map else None
         umap = {}
         if a.user_map:
             umap = {r["jira_name"]: r["op_login"] for r in csv.DictReader(open(a.user_map, encoding="utf-8"))}
         if a.cmd == "jira":
-            print(jira.run(OP.from_env(env), a.csv, a.project_name, a.identifier, umap, a.dry_run, not a.no_key_prefix, state_dir))
+            print(jira.run(OP.from_env(env), a.csv, a.project_name, a.identifier, umap, a.dry_run, not a.no_key_prefix, state_dir, name_map, not a.no_add_members, a.member_role))
         else:
             c = api_client(a, env)
             issues = atlassian_api.fetch_jira_issues(c, a.project, a.server)
             print(jira.run_issues(OP.from_env(env), issues, a.project_name, a.identifier, umap, a.dry_run, not a.no_key_prefix, state_dir,
-                                  download=None if a.no_attachments else c.download))
+                                  name_map=name_map, add_members=not a.no_add_members, member_role=a.member_role, download=None if a.no_attachments else c.download))
     elif a.cmd == "confluence-api":
         with tempfile.TemporaryDirectory() as work:
             src = Path(work) / "src"

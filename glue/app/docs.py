@@ -1,6 +1,7 @@
 """Docs-in-repo: Markdown in git is the source; this portal shows it, searchable and with backlinks to work packages."""
 import html
 import mimetypes
+from pathlib import Path
 import posixpath
 import re
 from urllib.parse import quote
@@ -14,10 +15,19 @@ from .refs import parse_refs
 
 router = APIRouter(prefix="/docs")
 
-STYLE = """body{font:16px/1.6 system-ui;margin:0;display:flex;min-height:100vh}nav{width:260px;background:#f4f5f7;padding:1rem;box-sizing:border-box}
-nav a{display:block;padding:.2rem 0;color:#0b5cad;text-decoration:none}main{flex:1;max-width:820px;padding:1rem 2rem}
-aside{border-top:1px solid #ddd;margin-top:2rem;padding-top:.5rem;font-size:.9rem;color:#555}pre{background:#f4f5f7;padding:.8rem;overflow:auto}
-input{width:100%;box-sizing:border-box;padding:.3rem;margin-bottom:.6rem}"""
+STYLE = """:root{color-scheme:light dark;--bg:#fff;--fg:#1d2733;--muted:#556070;--panel:#f4f5f7;--link:#0b5cad;--line:#d8dde3}
+@media (prefers-color-scheme:dark){:root{--bg:#14181f;--fg:#e6e9ee;--muted:#a3adba;--panel:#1d232d;--link:#7db4ff;--line:#2d3644}}
+body{font:16px/1.6 system-ui;margin:0;display:flex;min-height:100vh;background:var(--bg);color:var(--fg)}
+nav{width:260px;flex:none;background:var(--panel);padding:1rem;box-sizing:border-box;overflow-wrap:anywhere}
+a{color:var(--link)}nav a{display:block;padding:.2rem 0;text-decoration:none}main{flex:1;min-width:0;max-width:820px;padding:1rem 2rem}
+aside{border-top:1px solid var(--line);margin-top:2rem;padding-top:.5rem;font-size:.9rem;color:var(--muted)}
+pre{background:var(--panel);padding:.8rem;overflow:auto;border-radius:4px}code{font-size:.92em}img{max-width:100%}
+table{border-collapse:collapse}td,th{border:1px solid var(--line);padding:.3rem .6rem}blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+input{width:100%;box-sizing:border-box;padding:.3rem;margin-bottom:.6rem;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+.crumbs{font-size:.9rem;color:var(--muted);margin-bottom:1rem}.crumbs a{text-decoration:none}
+.toc{background:var(--panel);border-radius:6px;padding:.6rem 1rem;margin:0 0 1.2rem;font-size:.92rem}.toc ul{margin:.3rem 0;padding-left:1.1rem;list-style:none}
+.toc .l3{margin-left:1rem}.toc .l4{margin-left:2rem}pre.mermaid{background:none;text-align:center}
+@media (max-width:800px){body{flex-direction:column}nav{width:auto}main{padding:1rem}}"""
 
 
 def is_doc(path: str) -> bool:
@@ -47,12 +57,52 @@ def rewrite_links(md: str, repo: str, path: str) -> str:
     return _LINK.sub(fix, md)
 
 
-def page(repo: str, nav: list[str], title: str, body: str, q: str = "") -> HTMLResponse:
+_HEADING = re.compile(r'<h([2-4]) id="([^"]+)"[^>]*>(.*?)</h\1>', re.S)
+_MERMAID = re.compile(r'<div class="code-block-container[^"]*"><pre class="code-block[^"]*"><code class="chroma language-mermaid[^"]*">(.*?)</code></pre></div>', re.S)
+
+
+def build_toc(body_html: str, minimum: int = 3) -> str:
+    """'On this page' list from the h2-h4 headings (Gitea gives them ids); empty for short pages."""
+    items = [(int(m.group(1)), m.group(2), html.unescape(re.sub(r"<[^>]+>", "", m.group(3))).strip()) for m in _HEADING.finditer(body_html)]
+    if len(items) < minimum:
+        return ""
+    lis = "".join(f'<li class="l{lvl}"><a href="#{html.escape(hid)}">{html.escape(text)}</a></li>' for lvl, hid, text in items)
+    return f'<nav class="toc"><b>On this page</b><ul>{lis}</ul></nav>'
+
+
+def breadcrumbs(repo: str, path: str, paths: list[str]) -> str:
+    """repo > docs > home > architecture > database: folders link to the page that explains them when there is one
+    (home.md for the folder home/, README.md or index.md inside it), so imported Confluence trees stay navigable."""
+    parts = path.split("/")
+    crumbs = [f'<a href="/docs/{repo}">{html.escape(repo)}</a>']
+    known = set(paths)
+    for i, seg in enumerate(parts[:-1]):
+        folder = "/".join(parts[: i + 1])
+        target = next((c for c in (f"{folder}.md", f"{folder}/README.md", f"{folder}/index.md") if c in known), None)
+        crumbs.append(f'<a href="/docs/{repo}/{quote(target)}">{html.escape(seg)}</a>' if target else html.escape(seg))
+    crumbs.append(f"<b>{html.escape(parts[-1].removesuffix('.md'))}</b>")
+    return '<div class="crumbs">' + " › ".join(crumbs) + "</div>"
+
+
+def mermaid_src() -> str:
+    """Where the browser gets mermaid.js: a configured URL, else our own copy when present, else nothing (diagrams stay code)."""
+    if config.MERMAID_JS_URL:
+        return config.MERMAID_JS_URL
+    return "/docs/_assets/mermaid.js" if Path(config.MERMAID_JS_PATH).is_file() else ""
+
+
+def mermaidify(body_html: str) -> tuple[str, bool]:
+    """Turn Gitea's inert mermaid code blocks into <pre class="mermaid"> (the source stays HTML-escaped text)."""
+    out, n = _MERMAID.subn(lambda m: f'<pre class="mermaid">{m.group(1)}</pre>', body_html)
+    return out, n > 0
+
+
+def page(repo: str, nav: list[str], title: str, body: str, q: str = "", head: str = "") -> HTMLResponse:
     links = "".join(f'<a href="/docs/{repo}/{quote(p)}">{html.escape(p)}</a>' for p in nav)
     return HTMLResponse(
         f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title><style>{STYLE}</style>"
         f'<nav><b>{html.escape(repo)}</b><form action="/docs/{repo}/search"><input name=q placeholder="Search…" value="{html.escape(q)}"></form>{links}</nav>'
-        f"<main>{body}</main>"
+        f"<main>{body}</main>{head}"
     )
 
 
@@ -73,6 +123,15 @@ async def raw(g: httpx.AsyncClient, repo: str, path: str) -> str:
     if r.status_code != 200:
         raise HTTPException(404, "page not found")
     return r.text
+
+
+@router.get("/_assets/mermaid.js")
+async def mermaid_js():
+    """Our own copy of mermaid.js (see scripts/fetch-mermaid.sh); nothing is fetched from a CDN."""
+    f = Path(config.MERMAID_JS_PATH)
+    if not f.is_file():
+        raise HTTPException(404)
+    return Response(f.read_bytes(), media_type="text/javascript", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/{owner}/{name}", response_class=HTMLResponse, dependencies=[Depends(auth.repo_access)])
@@ -126,4 +185,9 @@ async def view(owner: str, name: str, path: str):
     aside = f"<aside><b>Related work packages</b><ul>{back}</ul></aside>" if back else ""
     # Gitea rewrites image URLs to its own /media/ URL; point them back at the portal
     body = re.sub(r'src="[^"]*/media/(docs/[^"]+?/_raw/[^"]+)"', r'src="/\1"', rendered.text)
-    return page(repo, paths, path, body + aside)
+    head = ""
+    if src := mermaid_src():
+        body, has_diagrams = mermaidify(body)
+        if has_diagrams:  # strict: diagram labels cannot inject HTML or run click handlers
+            head = f'<script src="{html.escape(src)}"></script><script>mermaid.initialize({{startOnLoad: true, securityLevel: "strict", theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default"}});</script>'
+    return page(repo, paths, path, breadcrumbs(repo, path, paths) + build_toc(body) + body + aside, head=head)

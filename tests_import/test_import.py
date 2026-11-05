@@ -93,3 +93,181 @@ def test_confluence_api_roundtrip(tmp_path):
     assert (tmp_path / "out/docs/_attachments/attachments/2/diagram.png").read_bytes() == b"PNGDATA"
     assert "[Architecture](home/architecture.md)" in (tmp_path / "out/docs/home.md").read_text()
     assert warnings
+
+
+# ---- name maps for OpenProject installs in other languages (issue #6) ----
+import pytest
+
+from panoptes_import import op_names
+
+
+@pytest.mark.parametrize("lang", op_names.LANGUAGES)
+def test_every_language_resolves_the_standard_items(lang):
+    """Simulate an OpenProject install in `lang`: its own seed names must be found for common Jira values, without fallback."""
+    n = op_names.NAMES[lang]
+    types = {name: f"/types/{i}" for i, name in enumerate(n["types"])}
+    statuses = {name: f"/statuses/{i}" for i, name in enumerate(n["statuses"])}
+    prios = {name: f"/priorities/{i}" for i, name in enumerate(n["priorities"])}
+    for jira_value, english in (("bug", "Bug"), ("epic", "Epic"), ("story", "User story"), ("sub-task", "Task")):
+        href, exact = jira.pick(jira_value, jira.TYPE_MAP, types)
+        assert exact and href == types[n["types"][op_names.NAMES["en"]["types"].index(english)]], (lang, jira_value)
+    for jira_value, english in (("to do", "New"), ("in progress", "In progress"), ("done", "Closed"), ("blocked", "On hold"), ("rejected", "Rejected")):
+        href, exact = jira.pick(jira_value, jira.STATUS_MAP, statuses)
+        assert exact and href == statuses[n["statuses"][op_names.NAMES["en"]["statuses"].index(english)]], (lang, jira_value)
+    for jira_value, english in (("highest", "Immediate"), ("medium", "Normal"), ("low", "Low")):
+        href, exact = jira.pick(jira_value, jira.PRIO_MAP, prios)
+        assert exact and href == prios[n["priorities"][op_names.NAMES["en"]["priorities"].index(english)]], (lang, jira_value)
+
+
+def test_fallbacks_exist_in_every_language():
+    for lang in op_names.LANGUAGES:
+        for kind, english in (("types", "Task"), ("statuses", "New"), ("priorities", "Normal")):
+            assert op_names.NAMES[lang][kind][op_names.NAMES["en"][kind].index(english)] in op_names.candidates(kind, english)
+
+
+def test_custom_map():
+    tm, sm, pm = jira.with_custom_map({"types": {"Spike": "Task"}, "statuses": {"Waiting for customer": "On hold", "Awaiting": "Mijn eigen status"}, "priorities": {"Wishlist": "Low"}})
+    assert "Task" in tm["spike"] and "Aufgabe" in tm["spike"]  # a standard English name is translated automatically
+    assert "Gestoppt" in sm["waiting for customer"]
+    assert sm["awaiting"] == ["Mijn eigen status"]  # anything else is taken as the exact name in your OpenProject
+    assert "Niedrig" in pm["wishlist"] and jira.TYPE_MAP.get("spike") is None  # defaults are not modified
+    assert jira.pick("Spike", tm, {"Aufgabe": "/t"}) == ("/t", True)
+
+
+# ---- worklogs (issue #3) ----
+def test_iso_duration():
+    assert jira.iso_duration(5400) == "PT1H30M" and jira.iso_duration(60) == "PT0H1M" and jira.iso_duration(10) == "PT0H1M"
+    assert jira.iso_duration(3600 * 8) == "PT8H0M" and jira.iso_duration(3600 * 26 + 120) == "PT26H2M"
+
+
+def test_worklogs_from_api_including_paging():
+    issues = atlassian_api.fetch_jira_issues(mock_client(), "API")
+    logs = {i.key: i.worklogs for i in issues}["API-2"]
+    assert [(w["date"], w["seconds"], w["author"]) for w in logs] == [("2026-10-20", 5400, "Jan Jansen"), ("2026-10-21", 1800, "Piet Pietersen"), ("2026-10-22", 600, "Jan Jansen")]
+    assert logs[0]["email"] == "jan@example.com" and logs[0]["comment"] == "Investigated the login bug"
+    assert all(not i.worklogs for i in issues if i.key != "API-2")
+
+
+def test_user_resolver_matches_on_exact_email_and_user_map():
+    class FakeOP:
+        calls = 0
+
+        def all_users(self):
+            FakeOP.calls += 1
+            return [{"email": "Jan@Example.com", "_links": {"self": {"href": "/api/v3/users/7"}}},
+                    {"email": "", "_links": {"self": {"href": "/api/v3/users/8"}}},
+                    {"email": "piet@example.com", "_links": {"self": {"href": "/api/v3/users/9"}}}]
+
+    r = jira.UserResolver(FakeOP(), {"Kees": "/api/v3/users/1"})
+    assert r.href("Kees") == "/api/v3/users/1"  # --user-map wins and needs no lookup
+    assert r.href("Jan Jansen", "jan@example.com") == "/api/v3/users/7"  # case-insensitive exact match
+    assert r.href("Piet", "piet@example.com") == "/api/v3/users/9"
+    assert r.href("Nobody", "nobody@example.com") is None and r.href("No email") is None
+    assert FakeOP.calls == 1  # the user list is fetched once
+
+
+# ---- the whole run_issues pipeline against a fake OpenProject (no Docker needed) ----
+class FakeOpenProject:
+    """Records what the importer does; answers like the real API where it matters."""
+
+    def __init__(self, users=()):
+        self.calls, self._users, self._next = [], list(users), 100
+        self.projects = {}
+
+    def elements(self, path):
+        names = {"/types": ["Task", "Bug", "Epic"], "/statuses": ["New", "In progress", "Closed"], "/priorities": ["Low", "Normal", "High"],
+                 "/roles": ["Member", "Reader"]}[path.split("?")[0]]
+        return [{"name": n, "_links": {"self": {"href": f"{path}/{n}"}}} for n in names]
+
+    def all_users(self):
+        return self._users
+
+    def req(self, method, path, **kw):
+        self.calls.append((method, path, kw.get("json")))
+        if method == "GET" and path.startswith("/projects/"):
+            raise RuntimeError("404")  # project does not exist yet
+        if method == "GET" and path == "/users/me":
+            return {"_links": {"self": {"href": "/api/v3/users/1"}}}
+        if method == "GET" and path.endswith("/types"):
+            return {"_embedded": {"elements": [{"name": n} for n in ("Task", "Bug", "Epic")]}}
+        self._next += 1
+        return {"id": self._next, "_embedded": {"elements": [{"name": n} for n in ("Task", "Bug", "Epic")]}}
+
+    def upload_attachment(self, *a):
+        self.calls.append(("UPLOAD", a[1], None))
+
+
+def _issues():
+    return atlassian_api.fetch_jira_issues(mock_client(), "API")
+
+
+def test_run_issues_links_people_adds_members_and_logs_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(jira, "ensure_types", lambda *a, **k: None)
+    op = FakeOpenProject(users=[{"email": "jan@example.com", "_links": {"self": {"href": "/api/v3/users/7"}}}])
+    report = jira.run_issues(op, _issues(), "API", "api", {}, False, state_dir=str(tmp_path), download=lambda url: b"x")
+    posts = [(p, j) for m, p, j in op.calls if m == "POST"]
+    # Jan (matched on e-mail) is added to the project as a Member exactly once, before being used
+    memberships = [j for p, j in posts if p == "/memberships"]
+    assert len(memberships) == 1 and memberships[0]["_links"]["principal"]["href"] == "/api/v3/users/7" and memberships[0]["_links"]["roles"][0]["href"] == "/roles/Member"
+    # he is the assignee of API-1/API-2, and 3 time entries exist: Jan's own two under his account, Piet's one under the importer
+    wps = {j["subject"].split("]")[0].lstrip("["): j for p, j in posts if p.endswith("/work_packages")}
+    assert wps["API-1"]["_links"]["assignee"]["href"] == "/api/v3/users/7" and wps["API-2"]["_links"]["assignee"]["href"] == "/api/v3/users/7"
+    assert "assignee" not in wps["API-3"]["_links"] and "assignee (Jira):" not in wps["API-2"]["description"]["raw"]
+    entries = [j for p, j in posts if p == "/time_entries"]
+    assert [(e["spentOn"], e["hours"], e["_links"]["user"]["href"]) for e in entries] == [("2026-10-20", "PT1H30M", "/api/v3/users/7"), ("2026-10-21", "PT0H30M", "/api/v3/users/1"), ("2026-10-22", "PT0H10M", "/api/v3/users/7")]
+    assert entries[1]["comment"]["raw"].startswith("[Jira worklog by Piet Pietersen]")
+    assert "time entries: 3" in report and "people added as project members: 1" in report
+    # re-running creates nothing twice
+    n = len(op.calls)
+    again = jira.run_issues(op, _issues(), "API", "api", {}, False, state_dir=str(tmp_path))
+    assert "Created: 0" in again and [c for c in op.calls[n:] if c[0] == "POST" and c[1].endswith("/work_packages")] == []
+
+
+def test_run_issues_without_adding_members(tmp_path, monkeypatch):
+    monkeypatch.setattr(jira, "ensure_types", lambda *a, **k: None)
+    op = FakeOpenProject(users=[{"email": "jan@example.com", "_links": {"self": {"href": "/api/v3/users/7"}}}])
+    jira.run_issues(op, _issues(), "API", "api", {}, False, state_dir=str(tmp_path), add_members=False)
+    posts = [(p, j) for m, p, j in op.calls if m == "POST"]
+    assert not [1 for p, _ in posts if p == "/memberships"]
+    assert all("assignee" not in j["_links"] for p, j in posts if p.endswith("/work_packages"))
+    assert all(e["_links"]["user"]["href"] == "/api/v3/users/1" for p, e in posts if p == "/time_entries")
+
+
+def test_unknown_member_role_is_reported(tmp_path, monkeypatch):
+    monkeypatch.setattr(jira, "ensure_types", lambda *a, **k: None)
+    op = FakeOpenProject(users=[{"email": "jan@example.com", "_links": {"self": {"href": "/api/v3/users/7"}}}])
+    report = jira.run_issues(op, _issues(), "API", "api", {}, False, state_dir=str(tmp_path), member_role="Does not exist")
+    assert "Project role 'Does not exist' not found" in report
+
+
+# ---- Confluence comments and labels (issue #4) ----
+def test_confluence_comments_and_labels(tmp_path):
+    warnings = atlassian_api.export_confluence_space(mock_client(), "TEAM", tmp_path / "src")
+    pages = confluence.convert_space(tmp_path / "src", tmp_path / "out", "TEAM")
+    arch = (tmp_path / "out/docs/home/architecture.md").read_text()
+    assert "*Labels: architecture, draft*" in arch
+    # both comment pages, in order, authors resolved; an author lookup that is refused falls back to the account id
+    assert "## Comments" in arch
+    i1, i2, i3 = arch.index("Please add a diagram."), arch.index("Agreed, see **section 2**."), arch.index("Typo in this sentence")
+    assert i1 < i2 < i3
+    assert "**Jan Jansen** (2026-10-21)" in arch and "**Piet Pietersen** (2026-10-22)" in arch and "**acc-denied** (Inline comment, 2026-10-23)" in arch
+    # pages without comments/labels get neither section
+    home = (tmp_path / "out/docs/home.md").read_text()
+    assert "Comments" not in home and "Labels:" not in home
+    # the option to skip them
+    atlassian_api.export_confluence_space(mock_client(), "TEAM", tmp_path / "src2", with_extras=False)
+    plain = confluence.convert_space(tmp_path / "src2", tmp_path / "out2", "TEAM")
+    assert "Comments" not in (tmp_path / "out2/docs/home/architecture.md").read_text()
+
+
+def test_pagination_follows_next_links_and_detects_loops():
+    # the fake API returns the 3 pages of the space in two chunks; all of them must arrive (this once looped forever)
+    got = atlassian_api.paged(mock_client(), "/wiki/api/v2/spaces/99/pages", **{"body-format": "storage", "limit": 100})
+    assert [p["id"] for p in got] == ["1", "2", "3"]
+
+    def looping(req: httpx.Request):
+        return httpx.Response(200, json={"results": [{"id": "x"}], "_links": {"next": "/loop?cursor=1"}})
+
+    c = atlassian_api.Client("http://mock", "a@b.nl", "tok", transport=httpx.MockTransport(looping))
+    with pytest.raises(SystemExit, match="pagination loop"):
+        atlassian_api.paged(c, "/loop")

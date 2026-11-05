@@ -59,7 +59,7 @@ docker compose up -d --build
 </details>
 
 ## What it does
-- `OP#123` in a commit or PR text: comment with a link on work package 123.
+- `OP#123` in a commit or PR/MR text: comment with a link on work package 123. Works with **Gitea, Forgejo, GitHub and GitLab** (see [Git hosts](#git-hosts)).
 - After a Jira import the old keys work too: `fixes PROJ-12` in a commit or PR is translated to the new work package through `.import-state/` (only keys the importer knows).
 - PR opened: status moves to *In progress*. `fixes OP#123` + merge (or a push to the default branch): status moves to *Closed*.
 - `GET /release-notes?repo=owner/name&base=v1&head=v2`: Markdown release notes grouped by work package type.
@@ -67,6 +67,20 @@ docker compose up -d --build
 - **Weekly stale-ticket digest:** every Monday (configurable) the glue posts the stale report to a Slack-compatible webhook (Slack, Mattermost, Rocket.Chat) and/or e-mails it. Configure per tenant: `python3 deploy/tenantctl.py digest acme --projects proj1,proj2 --webhook-url https://hooks.slack.com/... --tz Europe/Amsterdam` (or `--smtp-host ... --to a@x.com,b@x.com`; `--off` to disable). Preview with `GET /digest/preview`, send now with `POST /digest/send` (administrators). It sends once per day at most, also across restarts.
 - Docs-in-repo: Markdown in `docs/` (and the repo root) is served at `http://localhost:8090/docs/<owner>/<repo>` with navigation, search and a list of related work packages (from the commits that touched the file). A commit with `OP#123` that changes docs adds a link to that page on the work package.
   - Deliberate choice: the OpenProject API can only read wiki pages, not write them. Git is therefore the source of truth and the glue provides the reading portal.
+  - Every page has **breadcrumbs** (folders link to the page that explains them, so imported Confluence trees stay navigable), an **"On this page" table of contents**, light/dark theme and a mobile layout.
+  - **Diagrams:** Markdown ` ```mermaid ` blocks render as diagrams. Nothing is loaded from a CDN: run `scripts/fetch-mermaid.sh` once (downloads a pinned mermaid.js) and rebuild the glue image; the portal serves the file itself (`/docs/_assets/mermaid.js`). Alternatively set `MERMAID_JS_URL`. Without a copy, a diagram simply stays a readable code block. Rendering uses mermaid's `strict` security level.
+
+### Git hosts
+Point your host's webhook at the glue and use `WEBHOOK_SECRET` as the secret:
+
+| Host | Endpoint | Events | Authentication |
+|---|---|---|---|
+| Gitea | `/hooks/gitea` | push, pull request | `X-Gitea-Signature` (HMAC-SHA256) |
+| Forgejo | `/hooks/forgejo` | push, pull request | `X-Forgejo-Signature` or the Gitea-compatible headers |
+| GitHub | `/hooks/github` | push, pull requests (JSON) | `X-Hub-Signature-256` |
+| GitLab | `/hooks/gitlab` | push, merge requests | `X-Gitlab-Token` = the secret |
+
+Behaviour is the same everywhere: references in commits and PR/MR text comment on the work package, an opened PR/MR moves it to *In progress*, `fixes OP#n` or `fixes PROJ-n` plus a merge (or push to the default branch) closes it. Doc links in comments and the docs portal need Gitea (or Forgejo, which uses the same API), because the portal reads the repository from Gitea. **Status:** Gitea is tested end to end; Forgejo, GitHub and GitLab are covered by tests with their documented payload formats but have not been exercised against a live instance.
 
 ## Atlassian importer
 Runs locally (`pip install -r panoptes_import/requirements.txt`, reads `.env`).
@@ -79,9 +93,11 @@ python -m panoptes_import jira export.csv --identifier proj --project-name "My p
 # Confluence: Space settings > Export space > HTML
 python -m panoptes_import confluence space-export.zip --space-name TEAM --repo owner/name
 ```
-- **Jira:** types, statuses and priorities are mapped (English and Dutch OpenProject installs; unknown values fall back and are reported), hierarchy (epic/parent), comments, `blocks`/`duplicates`/`relates` links. Titles get a `[PROJ-123]` prefix so old keys stay searchable. Jira wiki markup becomes Markdown. Re-runnable: `.import-state/` remembers what was already created.
-- **Users:** `--user-map` (CSV: `jira_name,op_login`) maps assignees; otherwise the name goes into the description.
-- **Confluence:** the page tree becomes a folder structure in `docs/`, attachments go to `docs/_attachments/`, links between pages keep working, info/warning panels, code blocks and tables become Markdown. The result shows up in the docs portal right away.
+- **Jira:** types, statuses and priorities are mapped for OpenProject installs in **English, Dutch, German, French, Spanish, Italian and Brazilian Portuguese** (names taken from OpenProject's own translation files; unknown values fall back and are reported), plus hierarchy (epic/parent), comments, `blocks`/`duplicates`/`relates` links and **worklogs as time entries** (API import).
+  - Your own mappings: `--map mapping.json` with `{"types": {"spike": "Task"}, "statuses": {"waiting for customer": "On hold"}, "priorities": {"wishlist": "Low"}}`. A value is the English name of a standard item (translated for your install) or the exact name of one of your own.
+  - Time entries are owned by the matching OpenProject user (by e-mail or `--user-map`); entries of people without an account belong to the importing user, with the author's name in the comment. Titles get a `[PROJ-123]` prefix so old keys stay searchable. Jira wiki markup becomes Markdown. Re-runnable: `.import-state/` remembers what was already created.
+- **Users:** `--user-map` (CSV: `jira_name,op_login`) and, when Jira returns e-mail addresses, an exact e-mail match map people to OpenProject users. Matched people are **added to the new project as members** (role `Member`, change with `--member-role`), because OpenProject only accepts members as assignees. `--no-add-members` links nobody: names then go into the description.
+- **Confluence:** the page tree becomes a folder structure in `docs/`, attachments go to `docs/_attachments/`, links between pages keep working, info/warning panels, code blocks and tables become Markdown. With the API import, **labels** (an italic `Labels:` line) and **page and inline comments** (a *Comments* section with author and date) come along. The result shows up in the docs portal right away.
 - **Straight from the API** (no export needed): put your token in the environment and run
   ```bash
   export ATLASSIAN_TOKEN=...            # Cloud: id.atlassian.com > Security > API tokens
@@ -89,7 +105,7 @@ python -m panoptes_import confluence space-export.zip --space-name TEAM --repo o
   python -m panoptes_import confluence-api --url https://yourcompany.atlassian.net --email you@yourcompany.com --space TEAM --repo owner/name
   ```
   Jira Server/Data Center: use `--server` and omit `--email` (Personal Access Token as Bearer). Also imports attachments and matches assignees on e-mail address when Jira returns it. Confluence macros that have no Markdown equivalent are reported instead of silently dropped.
-- **Not (yet):** worklogs, issue history, custom fields, workflows, Confluence comments and permissions, Confluence XML export.
+- **Not (yet):** issue history, custom fields, workflows, Confluence permissions, Confluence XML export, worklogs from the CSV export (the API import has them).
 - Enabling work package types per project is not possible through the OpenProject API; the importer does it with `scripts/op-enable-types.sh`.
 
 ## Hosting: one isolated stack per customer

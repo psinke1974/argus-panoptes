@@ -20,6 +20,8 @@ The end-to-end scripts need Docker: see the README ("Try it in about 5 minutes",
 - `glue/`: FastAPI service between Gitea and OpenProject (webhooks, release notes, stale report and weekly digest, docs portal, OIDC sign-in).
 - `panoptes_import/`: Jira and Confluence importers (CSV/HTML export and REST API).
 - `deploy/`: Caddy proxy, per-tenant compose file, `tenantctl.py` (create/list/enable-sso/enable-ldap/ldap-user/digest/backup/restore/offsite/destroy), `deploy/systemd/` (backup timers).
+- `panoptes_import/op_names.py`: OpenProject's standard type/status/priority/role names per language. **Generated** by `scripts/gen_op_names.py` from OpenProject's seed files (see its docstring); to add a language, add it there and regenerate.
+- `scripts/fetch-mermaid.sh`: downloads the pinned mermaid.js the docs portal serves for diagrams (not committed).
 - `tests_import/mock_atlassian.py`: a fake Jira/Confluence API that mimics the real response shapes.
 
 ## Pull requests

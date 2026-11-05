@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 OP_URL = os.getenv("OP_URL", "http://openproject:80")
 OP_API_KEY = os.getenv("OP_API_KEY", "")
@@ -12,6 +13,11 @@ OP_HOST_HEADER = os.getenv("OP_HOST_HEADER", "localhost:8080")  # must equal OPE
 PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8090")  # base URL of this service, used for links in OpenProject
 OP_PUBLIC_URL = os.getenv("OP_PUBLIC_URL", "http://localhost:8080")
 LEGACY_KEYS_DIR = os.getenv("LEGACY_KEYS_DIR", "/data/import-state")  # directory with the importer's jira-*.json files
+
+# Diagrams in docs: Markdown ```mermaid blocks are rendered when a mermaid.js is available. Nothing is loaded from third
+# parties by default: put the file at MERMAID_JS_PATH (scripts/fetch-mermaid.sh downloads a pinned copy) or set MERMAID_JS_URL.
+MERMAID_JS_PATH = os.getenv("MERMAID_JS_PATH", str(Path(__file__).parent / "static" / "mermaid.min.js"))
+MERMAID_JS_URL = os.getenv("MERMAID_JS_URL", "")
 
 # Optional single sign-on (OpenID Connect). Active when OIDC_ISSUER is set; tenantctl enable-sso sets all of these.
 OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")  # public issuer URL, e.g. https://auth.acme.example.com/realms/panoptes

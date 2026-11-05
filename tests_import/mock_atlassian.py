@@ -18,8 +18,16 @@ def issue(i, key, summary, itype, status, prio, desc, parent=None, comments=(), 
          "issuelinks": [{"type": {"name": t}, "outwardIssue": {"key": k}} for t, k in links]}
     if parent:
         f["parent"] = {"key": parent}
+    if key == "API-2":  # the search result embeds only the first worklog; the rest comes from the worklog endpoint
+        f["worklog"] = {"total": len(WORKLOGS), "worklogs": WORKLOGS[:1]}
     return {"id": str(i), "key": key, "fields": f}
 
+
+WORKLOGS = [
+    {"started": "2026-10-20T09:00:00.000+0200", "timeSpentSeconds": 5400, "author": USER, "comment": "Investigated the login bug"},
+    {"started": "2026-10-21T14:30:00.000+0200", "timeSpentSeconds": 1800, "author": {"displayName": "Piet Pietersen"}, "comment": "Fix and test"},
+    {"started": "2026-10-22T10:00:00.000+0200", "timeSpentSeconds": 600, "author": USER, "comment": "Review"},
+]
 
 ISSUES = [
     issue(10001, "API-1", "New portal", "Epic", "To Do", "Medium", "Big epic.", links=[("Blocks", "API-4")]),
@@ -53,12 +61,35 @@ def handle(path: str, query: dict, host: str):
             return js({"issues": ISSUES[:2], "nextPageToken": "tok2", "isLast": False})
         start = int(query.get("startAt", ["0"])[0])  # Server: startAt/total
         return js({"issues": ISSUES[start:start + 2], "total": len(ISSUES)})
+    m = re.fullmatch(r"/rest/api/2/issue/([A-Z]+-\d+)/worklog", path)
+    if m:
+        start = int(query.get("startAt", ["0"])[0])
+        wl = WORKLOGS if m.group(1) == "API-2" else []
+        return js({"worklogs": wl[start:start + 2], "total": len(wl), "startAt": start})  # 2 per page: exercises paging
     if path.startswith("/secure/attachment/"):
         return 200, b"attachment-content", "text/plain"
     if path == "/wiki/api/v2/spaces":
         return js({"results": [{"id": "99", "key": "TEAM"}] if query["keys"][0] == "TEAM" else []})
     if path == "/wiki/api/v2/spaces/99/pages":
-        return js({"results": [{"id": p["id"], "title": p["title"], "parentId": p["parentId"], "body": {"storage": {"value": p["storage"]}}} for p in PAGES], "_links": {}})
+        rows = [{"id": p["id"], "title": p["title"], "parentId": p["parentId"], "body": {"storage": {"value": p["storage"]}}} for p in PAGES]
+        if "cursor" in query:  # the page list itself comes in two pages
+            return js({"results": rows[2:], "_links": {}})
+        return js({"results": rows[:2], "_links": {"next": "/wiki/api/v2/spaces/99/pages?cursor=p2&body-format=storage&limit=100"}})
+    if path == "/wiki/rest/api/user":
+        return js({"displayName": {"acc-1": "Jan Jansen", "acc-2": "Piet Pietersen"}.get(query["accountId"][0], "Someone")}) if query["accountId"][0] != "acc-denied" else js({"message": "forbidden"}, 403)
+    m = re.fullmatch(r"/wiki/api/v2/pages/(\d+)/labels", path)
+    if m:
+        return js({"results": [{"id": "1", "name": "architecture"}, {"id": "2", "name": "draft"}] if m.group(1) == "2" else [], "_links": {}})
+    m = re.fullmatch(r"/wiki/api/v2/pages/(\d+)/(footer|inline)-comments", path)
+    if m:
+        if m.group(1) != "2":
+            return js({"results": [], "_links": {}})
+        if m.group(2) == "inline":
+            return js({"results": [{"id": "c3", "version": {"authorId": "acc-denied", "createdAt": "2026-10-23T08:00:00.000Z"}, "body": {"storage": {"value": "<p>Typo in this sentence</p>"}}}], "_links": {}})
+        if "cursor" in query:  # second page of footer comments
+            return js({"results": [{"id": "c2", "version": {"authorId": "acc-2", "createdAt": "2026-10-22T10:00:00.000Z"}, "body": {"storage": {"value": "<p>Agreed, see <strong>section 2</strong>.</p>"}}}], "_links": {}})
+        return js({"results": [{"id": "c1", "version": {"authorId": "acc-1", "createdAt": "2026-10-21T09:00:00.000Z"}, "body": {"storage": {"value": "<p>Please add a diagram.</p>"}}}],
+                   "_links": {"next": "/wiki/api/v2/pages/2/footer-comments?cursor=abc"}})
     m = re.fullmatch(r"/wiki/api/v2/pages/(\d+)/attachments", path)
     if m:
         return js({"results": [{"title": "diagram.png", "downloadLink": "/download/attachments/2/diagram.png"}] if m.group(1) == "2" else []})

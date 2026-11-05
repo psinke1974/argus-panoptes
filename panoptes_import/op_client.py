@@ -33,6 +33,16 @@ class OP:
     def elements(self, path: str) -> list[dict]:
         return self.req("GET", path)["_embedded"]["elements"]
 
+    def all_users(self) -> list[dict]:
+        """Every user (the API pages: pageSize/offset where offset is the page number, starting at 1)."""
+        out, page = [], 1
+        while True:
+            data = self.req("GET", "/users", params={"pageSize": 100, "offset": page})
+            out += data["_embedded"]["elements"]
+            if not data["_embedded"]["elements"] or len(out) >= data["total"]:
+                return out
+            page += 1
+
     def upload_attachment(self, wp_id: int, filename: str, data: bytes) -> None:
         import json as _json
         r = self.http.post(f"/work_packages/{wp_id}/attachments",
